@@ -9,13 +9,13 @@ const ExerciseSelector = ({ exercises, onSelectExercise, selectedExercise }) => 
           <p>Loading exercises...</p>
         ) : (
           exercises.map((exercise) => (
-            <div
-              key={exercise.exercise_id}
-              className={`exercise-item ${selectedExercise?.exercise_id === exercise.exercise_id ? 'selected' : ''}`}
+            <button
+              key={exercise.id}
+              className={`exercise-item ${selectedExercise?.id === exercise.id ? 'selected' : ''}`}
               onClick={() => onSelectExercise(exercise)}
             >
-              <h3>{exercise.name}</h3>
-            </div>
+              {exercise.name}
+            </button>
           ))
         )}
       </div>

@@ -4,9 +4,20 @@ import * as poseDetection from '@tensorflow-models/pose-detection';
 import * as tf from '@tensorflow/tfjs-core';
 import '@tensorflow/tfjs-backend-webgl';
 import { calculateAngle } from '../utils/poseUtils';
+import { getPoseFeedback } from '../services/openaiService';
+import VoiceFeedback from './VoiceFeedback';
 
-const PoseDetector = ({ exercise, onBack, isDetecting }) => {
-  console.log('PoseDetector rendered with exercise:', exercise, 'isDetecting:', isDetecting);
+const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFeedbackEnabled }) => {
+  console.log('PoseDetector rendered with exercise:', exercise, 'isDetecting:', isDetecting, 'isOpenAIEnabled:', isOpenAIEnabled);
+  
+  // Ensure exercise object has the correct structure
+  const exerciseData = {
+    exercise_id: exercise?.id || exercise?.exercise_id || 'unknown',
+    name: exercise?.name || 'Unknown Exercise',
+    phases: exercise?.phases || []
+  };
+  
+  console.log('Exercise data initialized:', exerciseData);
   const webcamRef = useRef(null);
   const canvasRef = useRef(null);
   
@@ -16,6 +27,8 @@ const PoseDetector = ({ exercise, onBack, isDetecting }) => {
   const [feedback, setFeedback] = useState({ isCorrect: true, message: 'Get ready...' });
   const [phaseHistory, setPhaseHistory] = useState([]);
   const [isRepComplete, setIsRepComplete] = useState(false);
+  const [aiFeedback, setAIFeedback] = useState('');
+  const [lastAIRequestTime, setLastAIRequestTime] = useState(0);
 
   // Initialize the pose detector
   useEffect(() => {
@@ -61,9 +74,12 @@ const PoseDetector = ({ exercise, onBack, isDetecting }) => {
       return; // Only run when detector is initialized and isDetecting is true
     }
     
+    // Reset rep count when starting detection
+    setRepCount(0);
+    
     let animationFrameId;
     let lastPhase = 'neutral';
-    let phaseSequence = [];
+    const phaseSequence = []; // Convert to const since it's not being modified
     let repInProgress = false;
     let confidenceThreshold = 0.3; // Lower threshold for better detection
     let frameCount = 0;
@@ -85,252 +101,319 @@ const PoseDetector = ({ exercise, onBack, isDetecting }) => {
           return;
         }
         
-        if (!canvasRef.current) {
+        const video = webcamRef.current.video;
+        if (!video || !video.readyState === 4) {
+          console.log('Video not ready');
+          animationFrameId = requestAnimationFrame(detect);
+          return;
+        }
+        
+        const canvas = canvasRef.current;
+        if (!canvas) {
           console.log('Canvas reference not available');
           animationFrameId = requestAnimationFrame(detect);
           return;
         }
-
-        // Get video properties
-        const video = webcamRef.current.video;
         
-        if (!video || !video.readyState || video.readyState < 2) {
-          console.log('Video not ready yet, readyState:', video ? video.readyState : 'no video');
-          animationFrameId = requestAnimationFrame(detect);
-          return;
-        }
-        
+        // Match canvas dimensions to video
         const videoWidth = video.videoWidth;
         const videoHeight = video.videoHeight;
         
-        if (videoWidth === 0 || videoHeight === 0) {
-          console.log('Video dimensions not available yet:', videoWidth, 'x', videoHeight);
-          animationFrameId = requestAnimationFrame(detect);
-          return;
+        if (canvas.width !== videoWidth || canvas.height !== videoHeight) {
+          canvas.width = videoWidth;
+          canvas.height = videoHeight;
+          console.log('Canvas dimensions updated to match video:', videoWidth, 'x', videoHeight);
         }
-
-        // Set canvas dimensions
-        canvasRef.current.width = videoWidth;
-        canvasRef.current.height = videoHeight;
-
-        // Make detection
-        console.log('Estimating poses...');
+        
+        // Detect poses
+        console.log('Detecting poses...');
         const poses = await detector.estimatePoses(video);
         console.log('Poses detected:', poses.length);
-
+        
         if (poses.length > 0) {
-          const pose = poses[0];
-          drawPose(pose, canvasRef.current);
-          validatePose(pose);
-        } else {
-          console.log('No poses detected');
+          const pose = poses[0]; // Use the first detected pose
+          
+          // Draw the pose on the canvas
+          drawPose(pose, canvas);
+          
+          // Validate the pose for the current exercise
+          validatePose(pose, exerciseData);
         }
+        
+        // Continue the detection loop
+        animationFrameId = requestAnimationFrame(detect);
       } catch (error) {
-        console.error('Error in pose detection:', error);
+        console.error('Error in pose detection loop:', error);
+        animationFrameId = requestAnimationFrame(detect);
       }
-
-      animationFrameId = requestAnimationFrame(detect);
     };
 
-    const validatePose = (pose) => {
-      if (!exercise || !pose.keypoints) return;
-
-      // Extract keypoints with confidence check
+    const validatePose = (pose, exerciseData) => {
+      // Extract keypoints
       const keypoints = {};
       pose.keypoints.forEach(keypoint => {
-        if (keypoint.score > confidenceThreshold) {
-          keypoints[keypoint.name] = keypoint;
-        }
+        keypoints[keypoint.name] = keypoint;
       });
       
-      // Check if we have enough keypoints for analysis
-      const requiredKeypoints = ['left_hip', 'right_hip', 'left_knee', 'right_knee', 'left_ankle', 'right_ankle'];
-      const hasRequiredKeypoints = requiredKeypoints.some(name => 
-        keypoints['left_' + name.split('_')[1]] || keypoints['right_' + name.split('_')[1]]
-      );
+      // Determine required keypoints based on exercise type
+      let requiredKeypoints = [];
+      if (exerciseData.exercise_id === 'pushup1') {
+        // For push-ups, we need shoulders, elbows, and wrists
+        requiredKeypoints = [
+          'left_shoulder', 'right_shoulder',
+          'left_elbow', 'right_elbow',
+          'left_wrist', 'right_wrist'
+        ];
+      } else {
+        // For squats and other exercises, we need hips, knees, and ankles
+        requiredKeypoints = [
+          'left_hip', 'right_hip',
+          'left_knee', 'right_knee',
+          'left_ankle', 'right_ankle'
+        ];
+      }
       
-      console.log('Has required keypoints:', hasRequiredKeypoints);
+      // Check if all required keypoints are detected with sufficient confidence
+      const missingKeypoints = requiredKeypoints.filter(name => {
+        const keypoint = keypoints[name];
+        return !keypoint || keypoint.score < confidenceThreshold;
+      });
       
-      if (!hasRequiredKeypoints) {
-        setCurrentPhase('neutral');
+      if (missingKeypoints.length > 0) {
+        console.log('Missing required keypoints:', missingKeypoints.join(', '));
+        setFeedback({
+          isCorrect: false,
+          message: `Please ensure your ${missingKeypoints.map(k => k.split('_')[1]).join(' and ')} are visible`
+        });
         return;
       }
-
-      // Determine current phase based on joint angles
+      
+      // Calculate angles based on exercise type
+      let kneeAngle, hipAngle, elbowAngle;
       let phase = 'neutral';
       let isCorrect = true;
-      let feedbackMessage = 'Get ready to start...';
-
-      // Example for squat validation
-      if (exercise && exercise.exercise_id === 'squat1') {
-        console.log('Validating squat exercise');
-        // Calculate knee angles for both legs if available
-        let leftKneeAngle = 0;
-        let rightKneeAngle = 0;
+      let feedbackMessage = 'Good form!';
+      
+      if (exerciseData.exercise_id === 'pushup1') {
+        // For push-ups, calculate elbow angles
+        const leftElbowAngle = calculateAngle(
+          [keypoints.left_shoulder.x, keypoints.left_shoulder.y],
+          [keypoints.left_elbow.x, keypoints.left_elbow.y],
+          [keypoints.left_wrist.x, keypoints.left_wrist.y]
+        );
         
-        if (keypoints['left_hip'] && keypoints['left_knee'] && keypoints['left_ankle']) {
-          leftKneeAngle = calculateAngle(
-            keypoints['left_hip'],
-            keypoints['left_knee'],
-            keypoints['left_ankle']
-          );
-          console.log('Left knee angle:', Math.round(leftKneeAngle));
+        const rightElbowAngle = calculateAngle(
+          [keypoints.right_shoulder.x, keypoints.right_shoulder.y],
+          [keypoints.right_elbow.x, keypoints.right_elbow.y],
+          [keypoints.right_wrist.x, keypoints.right_wrist.y]
+        );
+        
+        // Use the better visible arm or average if both are visible
+        if (keypoints.left_elbow.score > keypoints.right_elbow.score) {
+          elbowAngle = leftElbowAngle;
+          console.log('Using left elbow angle:', Math.round(elbowAngle));
+        } else if (keypoints.right_elbow.score > keypoints.left_elbow.score) {
+          elbowAngle = rightElbowAngle;
+          console.log('Using right elbow angle:', Math.round(elbowAngle));
+        } else {
+          elbowAngle = (leftElbowAngle + rightElbowAngle) / 2;
+          console.log('Using average elbow angle:', Math.round(elbowAngle));
         }
         
-        if (keypoints['right_hip'] && keypoints['right_knee'] && keypoints['right_ankle']) {
-          rightKneeAngle = calculateAngle(
-            keypoints['right_hip'],
-            keypoints['right_knee'],
-            keypoints['right_ankle']
-          );
-          console.log('Right knee angle:', Math.round(rightKneeAngle));
-        }
+        // Use elbow angle for knee angle in the existing logic
+        kneeAngle = elbowAngle;
+      } else {
+        // For squats and other exercises, calculate knee and hip angles
+        const leftKneeAngle = calculateAngle(
+          [keypoints.left_hip.x, keypoints.left_hip.y],
+          [keypoints.left_knee.x, keypoints.left_knee.y],
+          [keypoints.left_ankle.x, keypoints.left_ankle.y]
+        );
         
-        // Use the knee with better visibility or average if both are visible
-        let kneeAngle = 0;
-        if (leftKneeAngle > 0 && rightKneeAngle > 0) {
-          kneeAngle = (leftKneeAngle + rightKneeAngle) / 2;
-          console.log('Using average knee angle:', Math.round(kneeAngle));
-        } else if (leftKneeAngle > 0) {
+        const rightKneeAngle = calculateAngle(
+          [keypoints.right_hip.x, keypoints.right_hip.y],
+          [keypoints.right_knee.x, keypoints.right_knee.y],
+          [keypoints.right_ankle.x, keypoints.right_ankle.y]
+        );
+        
+        // Use the better visible leg or average if both are visible
+        if (keypoints.left_knee.score > keypoints.right_knee.score) {
           kneeAngle = leftKneeAngle;
           console.log('Using left knee angle:', Math.round(kneeAngle));
-        } else if (rightKneeAngle > 0) {
+        } else if (keypoints.right_knee.score > keypoints.left_knee.score) {
           kneeAngle = rightKneeAngle;
           console.log('Using right knee angle:', Math.round(kneeAngle));
+        } else {
+          kneeAngle = (leftKneeAngle + rightKneeAngle) / 2;
+          console.log('Using average knee angle:', Math.round(kneeAngle));
         }
         
-        // Apply smoothing to knee angle
-        if (kneeAngle > 0) {
-          kneeAngleBuffer.push(kneeAngle);
-          if (kneeAngleBuffer.length > bufferSize) {
-            kneeAngleBuffer.shift();
+        // Calculate hip angle (simplified)
+        hipAngle = calculateAngle(
+          [keypoints.left_shoulder.x, keypoints.left_shoulder.y],
+          [keypoints.left_hip.x, keypoints.left_hip.y],
+          [keypoints.left_knee.x, keypoints.left_knee.y]
+        );
+      }
+      
+      // Smooth the knee angle using a simple moving average
+      kneeAngleBuffer.push(kneeAngle);
+      if (kneeAngleBuffer.length > bufferSize) {
+        kneeAngleBuffer.shift();
+      }
+      
+      const smoothedKneeAngle = kneeAngleBuffer.reduce((sum, angle) => sum + angle, 0) / kneeAngleBuffer.length;
+      
+      // Calculate angle change rate for movement detection
+      const kneeAngleDelta = smoothedKneeAngle - lastKneeAngle;
+      lastKneeAngle = smoothedKneeAngle;
+      
+      // Different phase detection based on exercise type
+      if (exerciseData.exercise_id === 'pushup1') {
+        // For push-ups, we use elbow angle instead of knee angle
+        if (smoothedKneeAngle > 150) { // Elbow extended (up position)
+          phase = 'up';
+          feedbackMessage = `In UP position (elbow: ${Math.round(smoothedKneeAngle)}°)`;
+          console.log('Phase: UP (Push-up)');
+          
+          // Validate against canonical data for push-ups
+          const elbowExpected = exerciseData.phases.find(p => p.phase === 'up')?.angles.find(a => a.joint === 'elbow');
+          
+          if (elbowExpected && Math.abs(smoothedKneeAngle - elbowExpected.expected) > elbowExpected.tolerance) {
+            isCorrect = false;
+            feedbackMessage = `Extend your arms more (current: ${Math.round(smoothedKneeAngle)}°, target: ${elbowExpected.expected}°)`;
           }
-          console.log('Added angle to buffer, buffer size:', kneeAngleBuffer.length);
-        }
-        
-        // Calculate smoothed angle
-        const smoothedKneeAngle = kneeAngleBuffer.length > 0 ? 
-          kneeAngleBuffer.reduce((sum, angle) => sum + angle, 0) / kneeAngleBuffer.length : 0;
-        
-        // Calculate hip angle
-        let hipAngle = 0;
-        if ((keypoints['left_shoulder'] || keypoints['right_shoulder']) && 
-            (keypoints['left_hip'] || keypoints['right_hip']) && 
-            (keypoints['left_knee'] || keypoints['right_knee'])) {
-          hipAngle = calculateAngle(
-            keypoints['left_shoulder'] || keypoints['right_shoulder'],
-            keypoints['left_hip'] || keypoints['right_hip'],
-            keypoints['left_knee'] || keypoints['right_knee']
-          );
-          console.log('Hip angle:', Math.round(hipAngle));
-        }
-
-        // Only proceed if we have valid knee angle measurements
-        if (smoothedKneeAngle > 0) {
-          // Detect movement direction by comparing with previous frame
-          const kneeAngleDelta = smoothedKneeAngle - lastKneeAngle;
-          lastKneeAngle = smoothedKneeAngle;
+        } else if (smoothedKneeAngle < 100) { // Elbow bent (down position)
+          phase = 'down';
+          feedbackMessage = `In DOWN position (elbow: ${Math.round(smoothedKneeAngle)}°)`;
+          console.log('Phase: DOWN (Push-up)');
           
-          console.log('Smoothed knee angle:', Math.round(smoothedKneeAngle), 'Delta:', Math.round(kneeAngleDelta));
+          // Validate against canonical data for push-ups
+          const elbowExpected = exerciseData.phases.find(p => p.phase === 'down')?.angles.find(a => a.joint === 'elbow');
           
-          // SIMPLIFIED PHASE DETECTION
-          // Determine phase based on angle thresholds with more lenient values
-          if (smoothedKneeAngle < 100) { // Deep squat position - even more lenient threshold
-            phase = 'down';
-            feedbackMessage = `In DOWN position (knee: ${Math.round(smoothedKneeAngle)}°)`;
-            
-            // Validate against canonical data
-            const kneeExpected = exercise.phases.find(p => p.phase === 'down')?.angles.find(a => a.joint === 'knee');
-            const hipExpected = exercise.phases.find(p => p.phase === 'down')?.angles.find(a => a.joint === 'hip');
-            
-            if (kneeExpected && Math.abs(smoothedKneeAngle - kneeExpected.expected) > kneeExpected.tolerance) {
-              isCorrect = false;
-              feedbackMessage = `Adjust your knee angle (current: ${Math.round(smoothedKneeAngle)}°, target: ${kneeExpected.expected}°)`;
-            }
-            
-            if (hipExpected && hipAngle > 0 && Math.abs(hipAngle - hipExpected.expected) > hipExpected.tolerance) {
-              isCorrect = false;
-              feedbackMessage = 'Adjust your hip position';
-            }
-          } else if (smoothedKneeAngle > 160) { // Standing position - more lenient threshold
-            phase = 'up';
-            feedbackMessage = `In UP position (knee: ${Math.round(smoothedKneeAngle)}°)`;
-            
-            // Validate against canonical data
-            const kneeExpected = exercise.phases.find(p => p.phase === 'up')?.angles.find(a => a.joint === 'knee');
-            const hipExpected = exercise.phases.find(p => p.phase === 'up')?.angles.find(a => a.joint === 'hip');
-            
-            if (kneeExpected && Math.abs(smoothedKneeAngle - kneeExpected.expected) > kneeExpected.tolerance) {
-              isCorrect = false;
-              feedbackMessage = `Straighten your legs more (current: ${Math.round(smoothedKneeAngle)}°, target: ${kneeExpected.expected}°)`;
-            }
-            
-            if (hipExpected && hipAngle > 0 && Math.abs(hipAngle - hipExpected.expected) > hipExpected.tolerance) {
-              isCorrect = false;
-              feedbackMessage = 'Stand up straighter';
-            }
-          } else {
-            // In transition between up and down - simplified detection with lower threshold
-            const threshold = 2; // Lower threshold for more responsive detection
-            if (Math.abs(kneeAngleDelta) > threshold) {
-              phase = kneeAngleDelta < -threshold ? 'going_down' : 'going_up';
-              feedbackMessage = phase === 'going_down' ? 
-                `Lowering (knee: ${Math.round(smoothedKneeAngle)}°)` : 
-                `Rising (knee: ${Math.round(smoothedKneeAngle)}°)`;
-              console.log('Movement detected:', phase, 'with delta:', Math.round(kneeAngleDelta));
-            } else {
-              // Not enough movement to determine direction
-              phase = lastPhase !== 'neutral' ? lastPhase : 'neutral';
-              feedbackMessage = `Hold steady (knee: ${Math.round(smoothedKneeAngle)}°)`;
-            }
+          if (elbowExpected && Math.abs(smoothedKneeAngle - elbowExpected.expected) > elbowExpected.tolerance) {
+            isCorrect = false;
+            feedbackMessage = `Lower your body more (current: ${Math.round(smoothedKneeAngle)}°, target: ${elbowExpected.expected}°)`;
           }
         } else {
-          feedbackMessage = 'Position yourself in camera view';
-        }
-
-        // Track phase changes for rep counting
-        if (phase !== lastPhase) {
-          console.log(`Phase changed from ${lastPhase} to ${phase}`);
-          phaseSequence.push(phase);
-          
-          // Update phase history for UI display
-          setPhaseHistory(prev => {
-            const newHistory = [...prev, phase].slice(-5); // Keep last 5 phases
-            return newHistory;
-          });
-          
-          // Start tracking a rep when user enters going_down or down phase
-          if ((phase === 'down' || phase === 'going_down') && !repInProgress) {
-            console.log('Starting rep - movement detected');
-            repInProgress = true;
-            setIsRepComplete(false);
-          }
-          
-          // Complete a rep when user goes from down/going_up to up phase
-          if ((lastPhase === 'down' || lastPhase === 'going_up') && phase === 'up' && repInProgress) {
-            console.log('Completing rep - reached UP phase');
-            setRepCount(prev => prev + 1);
-            repInProgress = false;
-            setIsRepComplete(true);
-            
-            // Reset phase sequence after completing a rep
-            phaseSequence = [];
-            
-            // Show completion message
-            feedbackMessage = 'Great job! Rep completed!';
+          // In transition between up and down
+          const threshold = 2; // Threshold for movement detection
+          if (Math.abs(kneeAngleDelta) > threshold) {
+            phase = kneeAngleDelta < -threshold ? 'going_down' : 'going_up';
+            feedbackMessage = phase === 'going_down' ? 
+              `Lowering (elbow: ${Math.round(smoothedKneeAngle)}°)` : 
+              `Rising (elbow: ${Math.round(smoothedKneeAngle)}°)`;
+            console.log('Movement detected:', phase, 'with delta:', Math.round(kneeAngleDelta));
+          } else {
+            phase = lastPhase !== 'neutral' ? lastPhase : 'neutral';
+            feedbackMessage = `Hold steady (elbow: ${Math.round(smoothedKneeAngle)}°)`;
           }
         }
+      } else {
+        // For squats and other exercises
+        if (smoothedKneeAngle < 100) { // Deep squat position
+          phase = 'down';
+          feedbackMessage = `In DOWN position (knee: ${Math.round(smoothedKneeAngle)}°)`;
+          
+          // Validate against canonical data
+          const kneeExpected = exerciseData.phases.find(p => p.phase === 'down')?.angles.find(a => a.joint === 'knee');
+          const hipExpected = exerciseData.phases.find(p => p.phase === 'down')?.angles.find(a => a.joint === 'hip');
+          
+          if (kneeExpected && Math.abs(smoothedKneeAngle - kneeExpected.expected) > kneeExpected.tolerance) {
+            isCorrect = false;
+            feedbackMessage = `Adjust your knee angle (current: ${Math.round(smoothedKneeAngle)}°, target: ${kneeExpected.expected}°)`;
+          }
+          
+          if (hipExpected && hipAngle > 0 && Math.abs(hipAngle - hipExpected.expected) > hipExpected.tolerance) {
+            isCorrect = false;
+            feedbackMessage = 'Adjust your hip position';
+          }
+        } else if (smoothedKneeAngle > 160) { // Standing position
+          phase = 'up';
+          feedbackMessage = `In UP position (knee: ${Math.round(smoothedKneeAngle)}°)`;
+          
+          // Validate against canonical data
+          const kneeExpected = exerciseData.phases.find(p => p.phase === 'up')?.angles.find(a => a.joint === 'knee');
+          const hipExpected = exerciseData.phases.find(p => p.phase === 'up')?.angles.find(a => a.joint === 'hip');
+          
+          if (kneeExpected && Math.abs(smoothedKneeAngle - kneeExpected.expected) > kneeExpected.tolerance) {
+            isCorrect = false;
+            feedbackMessage = `Straighten your legs more (current: ${Math.round(smoothedKneeAngle)}°, target: ${kneeExpected.expected}°)`;
+          }
+          
+          if (hipExpected && hipAngle > 0 && Math.abs(hipAngle - hipExpected.expected) > hipExpected.tolerance) {
+            isCorrect = false;
+            feedbackMessage = 'Stand up straighter';
+          }
+        } else {
+          // In transition between up and down - simplified detection with lower threshold
+          const threshold = 2; // Lower threshold for more responsive detection
+          if (Math.abs(kneeAngleDelta) > threshold) {
+            phase = kneeAngleDelta < -threshold ? 'going_down' : 'going_up';
+            feedbackMessage = phase === 'going_down' ? 
+              `Lowering (knee: ${Math.round(smoothedKneeAngle)}°)` : 
+              `Rising (knee: ${Math.round(smoothedKneeAngle)}°)`;
+            console.log('Movement detected:', phase, 'with delta:', Math.round(kneeAngleDelta));
+          } else {
+            // Not enough movement to determine direction
+            phase = lastPhase !== 'neutral' ? lastPhase : 'neutral';
+            feedbackMessage = `Hold steady (knee: ${Math.round(smoothedKneeAngle)}°)`;
+          }
+        }
+      }
+      
+      // Update phase history for UI display
+      setPhaseHistory(prev => {
+        const newHistory = [...prev, phase].slice(-5); // Keep last 5 phases
+        return newHistory;
+      });
+      
+      // Start tracking a rep when user enters going_down or down phase
+      if ((phase === 'down' || phase === 'going_down') && !repInProgress) {
+        console.log('Starting rep - movement detected');
+        repInProgress = true;
+        setIsRepComplete(false);
+      }
+      
+      // Complete a rep when user goes from down/going_up to up phase
+      if ((lastPhase === 'down' || lastPhase === 'going_up') && phase === 'up' && repInProgress) {
+        console.log('Completing rep - reached UP phase');
+        setRepCount(prevCount => {
+          console.log('Incrementing rep count from', prevCount, 'to', prevCount + 1);
+          return prevCount + 1;
+        });
+        repInProgress = false;
+        setIsRepComplete(true);
         
-        // Debug information
-        frameCount++;
-        if (frameCount % 5 === 0) { // Log more frequently for better debugging
-          console.log(`Current knee angle: ${Math.round(smoothedKneeAngle)}°, Phase: ${phase}, Reps: ${repCount}, RepInProgress: ${repInProgress}`);
-        }
+        // Reset phase sequence after completing a rep
+phaseSequence.length = 0; // Clear the array while keeping the reference
+        
+        // Show completion message
+        feedbackMessage = 'Great job! Rep completed!';
+      }
+      
+      // Debug information
+      frameCount++;
+      if (frameCount % 5 === 0) { // Log more frequently for better debugging
+        console.log(`Current knee angle: ${Math.round(smoothedKneeAngle)}°, Phase: ${phase}, Reps: ${repCount}, RepInProgress: ${repInProgress}`);
       }
 
       lastPhase = phase;
       setCurrentPhase(phase);
       setFeedback({ isCorrect, message: feedbackMessage });
+      
+      // Get AI feedback if enabled and not too frequent
+      if (isOpenAIEnabled && pose) {
+        const now = Date.now();
+        // Only request AI feedback every 3 seconds to avoid excessive API calls
+        if (now - lastAIRequestTime > 3000) {
+          setLastAIRequestTime(now);
+          getAIFeedback(pose, phase, isCorrect, feedbackMessage);
+        }
+      } else if (!isOpenAIEnabled) {
+        // If OpenAI is not enabled, use the current feedback message
+        setAIFeedback(feedbackMessage);
+      }
     };
 
     const drawPose = (pose, canvas) => {
@@ -378,49 +461,39 @@ const PoseDetector = ({ exercise, onBack, isDetecting }) => {
             ctx.fillStyle = 'white';
             ctx.font = '14px Arial';
             ctx.fillText(keypoint.name.split('_')[1], keypoint.x + 10, keypoint.y);
-            
-            // Add confidence score for debugging
-            ctx.font = '12px Arial';
-            ctx.fillText(`${(keypoint.score * 100).toFixed(0)}%`, keypoint.x + 10, keypoint.y + 15);
           }
         }
       });
-
-      // Draw skeleton with thicker lines for leg connections
-      const connections = [
-        ['nose', 'left_eye'], ['left_eye', 'left_ear'], ['nose', 'right_eye'],
-        ['right_eye', 'right_ear'], ['nose', 'left_shoulder'], ['nose', 'right_shoulder'],
-        ['left_shoulder', 'left_elbow'], ['left_elbow', 'left_wrist'],
-        ['right_shoulder', 'right_elbow'], ['right_elbow', 'right_wrist'],
-        ['left_shoulder', 'right_shoulder'], ['left_shoulder', 'left_hip'],
-        ['right_shoulder', 'right_hip'], ['left_hip', 'right_hip'],
-        ['left_hip', 'left_knee'], ['left_knee', 'left_ankle'],
-        ['right_hip', 'right_knee'], ['right_knee', 'right_ankle']
-      ];
-
-      const keypointMap = {};
-      pose.keypoints.forEach(keypoint => {
-        keypointMap[keypoint.name] = keypoint;
-      });
-
-      connections.forEach(([start, end]) => {
-        const startPoint = keypointMap[start];
-        const endPoint = keypointMap[end];
-
-        if (startPoint && endPoint && startPoint.score > confidenceThreshold && endPoint.score > confidenceThreshold) {
-          // Check if this is a leg connection
-          const isLegConnection = (
-            (start.includes('hip') && end.includes('knee')) ||
-            (start.includes('knee') && end.includes('ankle'))
-          );
+      
+      // Draw skeleton
+      if (pose.keypoints3D && pose.keypoints3D.length > 0) {
+        // Draw 3D skeleton if available
+        // Implementation depends on the specific 3D visualization needs
+      } else {
+        // Draw 2D skeleton
+        const connections = [
+          ['nose', 'left_eye'], ['nose', 'right_eye'],
+          ['left_eye', 'left_ear'], ['right_eye', 'right_ear'],
+          ['nose', 'left_shoulder'], ['nose', 'right_shoulder'],
+          ['left_shoulder', 'left_elbow'], ['right_shoulder', 'right_elbow'],
+          ['left_elbow', 'left_wrist'], ['right_elbow', 'right_wrist'],
+          ['left_shoulder', 'left_hip'], ['right_shoulder', 'right_hip'],
+          ['left_hip', 'left_knee'], ['right_hip', 'right_knee'],
+          ['left_knee', 'left_ankle'], ['right_knee', 'right_ankle'],
+          ['left_shoulder', 'right_shoulder'], ['left_hip', 'right_hip']
+        ];
+        
+        connections.forEach(([p1, p2]) => {
+          const point1 = pose.keypoints.find(kp => kp.name === p1);
+          const point2 = pose.keypoints.find(kp => kp.name === p2);
           
-          ctx.beginPath();
-          ctx.moveTo(startPoint.x, startPoint.y);
-          ctx.lineTo(endPoint.x, endPoint.y);
-          ctx.lineWidth = isLegConnection ? 4 : 2;
-          
-          // Highlight leg connections with brighter colors based on phase
-          if (isLegConnection) {
+          if (point1 && point2 && point1.score > confidenceThreshold && point2.score > confidenceThreshold) {
+            ctx.beginPath();
+            ctx.moveTo(point1.x, point1.y);
+            ctx.lineTo(point2.x, point2.y);
+            ctx.lineWidth = 2;
+            
+            // Color based on phase and correctness
             if (currentPhase === 'down') {
               ctx.strokeStyle = feedback.isCorrect ? 'rgba(0, 255, 0, 0.9)' : 'rgba(255, 0, 0, 0.9)';
             } else if (currentPhase === 'up') {
@@ -437,8 +510,8 @@ const PoseDetector = ({ exercise, onBack, isDetecting }) => {
           }
           
           ctx.stroke();
-        }
-      });
+        });
+      }
       
       console.log('Pose drawing complete');
     };
@@ -452,116 +525,165 @@ const PoseDetector = ({ exercise, onBack, isDetecting }) => {
     };
   }, [detector, exercise, isDetecting]);
 
+  // Function to get AI feedback from OpenAI
+  const getAIFeedback = async (pose, phase, isCorrect, currentFeedbackMsg) => {
+    try {
+      if (!isOpenAIEnabled || !pose) {
+        console.log('AI feedback skipped:', { isOpenAIEnabled, poseAvailable: !!pose });
+        // If OpenAI is not enabled, use the current feedback message
+        setAIFeedback(currentFeedbackMsg || 'AI feedback not available');
+        return;
+      }
+      
+      console.log('Requesting AI feedback for phase:', phase, 'Exercise:', exerciseData.name);
+      console.log('Pose data sample:', { 
+        keypoints: pose.keypoints.length, 
+        sampleKeypoint: pose.keypoints[0] 
+      });
+      
+      const aiResponse = await getPoseFeedback(
+        exerciseData,
+        phase,
+        pose,
+        isCorrect,
+        currentFeedbackMsg
+      );
+      
+      console.log('AI feedback received:', aiResponse);
+      setAIFeedback(aiResponse);
+    } catch (error) {
+      console.error('Error getting AI feedback:', error);
+      setAIFeedback('Error getting AI feedback: ' + error.message);
+    }
+  };
+
   return (
     <div className="pose-detector">
-      <div className="webcam-container">
-        <Webcam
-          ref={webcamRef}
-          style={{
-            position: 'absolute',
-            marginLeft: 'auto',
-            marginRight: 'auto',
-            left: 0,
-            right: 0,
-            textAlign: 'center',
-            zIndex: 9,
-            width: 640,
-            height: 480,
-          }}
-          audio={false}
-          mirrored={true}
-          screenshotFormat="image/jpeg"
-          videoConstraints={{
-            width: 640,
-            height: 480,
-            facingMode: 'user',
-            frameRate: { ideal: 30 }
-          }}
-          onUserMedia={(stream) => {
-            console.log('Webcam access granted');
-            console.log('Video tracks:', stream.getVideoTracks().length);
-            const videoTrack = stream.getVideoTracks()[0];
-            if (videoTrack) {
-              console.log('Video track settings:', videoTrack.getSettings());
-            }
-          }}
-          onUserMediaError={(error) => console.error('Webcam access error:', error)}
-        />
-        <canvas
-          ref={canvasRef}
-          style={{
-            position: 'absolute',
-            marginLeft: 'auto',
-            marginRight: 'auto',
-            left: 0,
-            right: 0,
-            textAlign: 'center',
-            zIndex: 9,
-            width: 640,
-            height: 480,
-          }}
-        />
+      <div className="controls">
+        <button onClick={onBack}>Back</button>
+        <h2 style={{ fontWeight: 'bold', fontSize: '1.5em', color: '#333' }}>{exerciseData.name || 'Not selected'}</h2>
       </div>
+      <div className="detection-area">
+        <div className="webcam-container">
+          <Webcam
+            ref={webcamRef}
+            style={{
+              position: 'absolute',
+              marginLeft: 'auto',
+              marginRight: 'auto',
+              left: 0,
+              right: 0,
+              textAlign: 'center',
+              zIndex: 9,
+              width: 640,
+              height: 480,
+            }}
+            audio={false}
+            mirrored={true}
+            screenshotFormat="image/jpeg"
+            videoConstraints={{
+              width: 640,
+              height: 480,
+              facingMode: 'user',
+              frameRate: { ideal: 30 }
+            }}
+            onUserMedia={(stream) => {
+              console.log('Webcam access granted');
+              console.log('Video tracks:', stream.getVideoTracks().length);
+              const videoTrack = stream.getVideoTracks()[0];
+              if (videoTrack) {
+                console.log('Video track settings:', videoTrack.getSettings());
+              }
+            }}
+            onUserMediaError={(error) => console.error('Webcam access error:', error)}
+          />
+          <canvas
+            ref={canvasRef}
+            style={{
+              position: 'absolute',
+              marginLeft: 'auto',
+              marginRight: 'auto',
+              left: 0,
+              right: 0,
+              textAlign: 'center',
+              zIndex: 9,
+              width: 640,
+              height: 480,
+            }}
+          />
+        </div>
 
-      <div className="feedback-container">
-        <h2>{exercise?.name || 'Exercise'}</h2>
-        <div className={`feedback ${feedback.isCorrect ? 'correct' : 'incorrect'}`}>
-          <p>{feedback.message}</p>
-        </div>
-        <div className="stats">
-          <div className="rep-counter">
-            <p className="rep-count">Reps: {repCount}</p>
-            {isRepComplete && (
-              <div className="rep-complete-indicator">
-                Rep Complete! ✓
+        <div className="feedback-container">
+            <h3 style={{ fontWeight: 'bold', fontSize: '1.4em', color: '#333', marginBottom: '10px' }}>Exercise: {exerciseData.name || 'Not selected'}</h3>
+            <div className={`feedback ${feedback.isCorrect ? 'correct' : 'incorrect'}`}>
+               <p>{feedback.message}</p>
+             </div>
+             {isOpenAIEnabled && (
+               <div className="ai-feedback">
+                 <h3>AI Voice Feedback:</h3>
+                 <p>{aiFeedback || 'Analyzing your form...'}</p>
+               </div>
+             )}
+             <div className="stats">
+               <div className="rep-counter" style={{ fontWeight: 'bold', fontSize: '1.3em', margin: '10px 0', color: '#007bff' }}>
+                 <p className="rep-count">Reps: {repCount}</p>
+                 {isRepComplete && (
+                   <div className="rep-complete-indicator">
+                     Rep Complete! ✓
+                   </div>
+                 )}
+               </div>
+            
+            <div className="phase-indicator">
+              <p className="current-phase">Current Phase: 
+                <span className={`phase ${currentPhase}`}>
+                  {currentPhase === 'going_up' ? 'Rising' : 
+                   currentPhase === 'going_down' ? 'Lowering' : 
+                   currentPhase || 'neutral'}
+                </span>
+              </p>
+            </div>
+            
+            {/* Phase history visualization */}
+            <div className="phase-history">
+              <p>Movement Sequence:</p>
+              <div className="phase-dots">
+                {phaseHistory.map((phase, index) => (
+                  <span 
+                    key={index} 
+                    className={`phase-dot ${phase}`}
+                    title={phase === 'going_up' ? 'Rising' : 
+                           phase === 'going_down' ? 'Lowering' : phase}
+                  ></span>
+                ))}
               </div>
-            )}
-          </div>
-          
-          <div className="phase-indicator">
-            <p className="current-phase">Current Phase: 
-              <span className={`phase ${currentPhase}`}>
-                {currentPhase === 'going_up' ? 'Rising' : 
-                 currentPhase === 'going_down' ? 'Lowering' : 
-                 currentPhase || 'neutral'}
-              </span>
-            </p>
-          </div>
-          
-          {/* Phase history visualization */}
-          <div className="phase-history">
-            <p>Movement Sequence:</p>
-            <div className="phase-dots">
-              {phaseHistory.map((phase, index) => (
-                <span 
-                  key={index} 
-                  className={`phase-dot ${phase}`}
-                  title={phase === 'going_up' ? 'Rising' : 
-                         phase === 'going_down' ? 'Lowering' : phase}
-                ></span>
-              ))}
             </div>
-          </div>
-          
-          <div className="exercise-progress">
-            <p>Progress:</p>
-            <div className="progress-bar">
-              <div 
-                className={`progress-indicator ${currentPhase}`}
-                style={{
-                  width: currentPhase === 'up' ? '100%' : 
-                         currentPhase === 'going_up' ? '75%' : 
-                         currentPhase === 'going_down' ? '25%' : 
-                         currentPhase === 'down' ? '0%' : '50%'
-                }}
-              ></div>
+            
+            <div className="exercise-progress">
+              <p>Progress:</p>
+              <div className="progress-bar">
+                <div 
+                  className={`progress-indicator ${currentPhase}`}
+                  style={{
+                    width: currentPhase === 'up' ? '100%' : 
+                           currentPhase === 'going_up' ? '75%' : 
+                           currentPhase === 'going_down' ? '25%' : 
+                           currentPhase === 'down' ? '0%' : '50%'
+                  }}
+                ></div>
+              </div>
             </div>
           </div>
         </div>
-        <button className="back-button" onClick={onBack}>
-          Back to Exercises
-        </button>
       </div>
+      
+      {/* Voice feedback component */}
+      {voiceFeedbackEnabled && isOpenAIEnabled && (
+        <VoiceFeedback 
+          feedback={aiFeedback} 
+          enabled={voiceFeedbackEnabled && isDetecting} 
+        />
+      )}
     </div>
   );
 };

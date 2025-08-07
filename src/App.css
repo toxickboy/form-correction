@@ -4,64 +4,101 @@
   padding: 0;
 }
 
+html, body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
 body {
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
   line-height: 1.6;
   color: #333;
   background-color: #f8f9fa;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
 }
 
 .app-container {
   max-width: 1200px;
+  width: 100%;
   margin: 0 auto;
   padding: 2rem;
+  min-height: 100vh;
+  background-color: #ffffff;
+  display: flex;
+  flex-direction: column;
 }
 
 header {
   text-align: center;
   margin-bottom: 2rem;
+  padding: 1rem;
+  background-color: #f8f9fa;
+  border-bottom: 1px solid #e9ecef;
 }
 
 header h1 {
   color: #2c3e50;
   margin-bottom: 0.5rem;
+  font-size: 2rem;
 }
 
 header p {
   color: #7f8c8d;
+  font-size: 1.1rem;
 }
 
 main {
   display: flex;
   flex-direction: column;
   align-items: center;
+  flex: 1;
+  width: 100%;
+  padding: 2rem;
 }
 
 /* Exercise Selector Styles */
 .exercise-selector {
   width: 100%;
   max-width: 800px;
-  margin-bottom: 2rem;
+  margin: 20px auto 2rem auto;
+  background-color: #ffffff;
+  padding: 2rem;
+  border-radius: 12px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
 }
 
 .exercise-selector h2 {
-  margin-bottom: 1rem;
+  margin-bottom: 2rem;
   text-align: center;
+  color: #2c3e50;
+  font-size: 1.8rem;
+  font-weight: 600;
 }
 
 .exercise-list {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 1.5rem;
+  padding: 1rem;
 }
 
 .exercise-item {
-  background-color: white;
-  border-radius: 8px;
+  background-color: #ffffff;
+  border-radius: 10px;
   padding: 1.5rem;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  border: 2px solid #e9ecef;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
   cursor: pointer;
-  transition: transform 0.2s, box-shadow 0.2s;
+  transition: all 0.3s ease;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 120px;
 }
 
 .exercise-item:hover {
@@ -91,6 +128,95 @@ main {
   max-width: 600px;
 }
 
+.openai-setup {
+  margin: 20px 0;
+  padding: 15px;
+  background-color: rgba(0, 0, 0, 0.5);
+  border-radius: 8px;
+  text-align: left;
+}
+
+.openai-setup h3 {
+  margin-top: 0;
+  color: #61dafb;
+  font-size: 1.2rem;
+}
+
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 20px;
+  background-color: #f5f5f5;
+  border-bottom: 1px solid #ddd;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+}
+
+.status-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 5px;
+  transition: all 0.3s ease;
+}
+
+.status-dot.enabled {
+  background-color: #4CAF50;
+  box-shadow: 0 0 5px #4CAF50;
+}
+
+.status-dot.disabled {
+  background-color: #f44336;
+  box-shadow: 0 0 5px #f44336;
+}
+
+.test-link {
+  display: inline-block;
+  background-color: #2196F3;
+  color: white;
+  padding: 5px 10px;
+  border-radius: 4px;
+  text-decoration: none;
+  font-size: 14px;
+  transition: background-color 0.3s;
+}
+
+.test-link:hover {
+  background-color: #0b7dda;
+}
+
+.status-text {
+  font-size: 0.9rem;
+  color: white;
+}
+
+.voice-toggle {
+  display: flex;
+  align-items: center;
+  color: white;
+}
+
+.voice-toggle label {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.voice-toggle input {
+  margin-right: 8px;
+}
+
 .start-button {
   margin-top: 1.5rem;
   padding: 0.75rem 2rem;
@@ -115,6 +241,10 @@ main {
   width: 100%;
 }
 
+.pose-detector {
+  margin-top: 20px;
+}
+
 .webcam-container {
   position: relative;
   width: 640px;
@@ -125,6 +255,18 @@ main {
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
 }
 
+.controls {
+  margin-bottom: 20px;
+}
+
+.detection-area {
+  min-height: 400px;
+  border: 1px solid #ccc;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .feedback-container {
   width: 100%;
   max-width: 640px;
@@ -133,6 +275,25 @@ main {
   border-radius: 8px;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
   text-align: center;
+}
+
+.ai-feedback {
+  margin-top: 1rem;
+  padding: 10px;
+  background-color: rgba(97, 218, 251, 0.1);
+  border-left: 3px solid #61dafb;
+  border-radius: 4px;
+}
+
+.ai-feedback h3 {
+  margin: 0 0 5px 0;
+  font-size: 1rem;
+  color: #61dafb;
+}
+
+.ai-feedback p {
+  margin: 0;
+  font-size: 0.9rem;
 }
 
 .feedback {

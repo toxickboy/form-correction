@@ -67,15 +67,13 @@ const mockExercises = [
  * @returns {Promise<Array>} - Array of exercise objects
  */
 export const fetchExercises = async () => {
-  // In a real app, this would be an API call
-  // return await fetch('/api/exercises').then(res => res.json());
-  
-  // For now, return mock data
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve(mockExercises);
-    }, 500); // Simulate network delay
-  });
+  // Return complete exercise data from mockExercises
+  return mockExercises.map(exercise => ({
+    id: exercise.exercise_id,
+    name: exercise.name,
+    description: `${exercise.name} exercise`,
+    phases: exercise.phases
+  }));
 };
 
 /**

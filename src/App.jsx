@@ -1,13 +1,17 @@
 import React, { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import './App.css'
 import ExerciseSelector from './components/ExerciseSelector'
 import PoseDetector from './components/PoseDetector'
 import { fetchExercises } from './services/api'
+import { initOpenAI } from './services/openaiService'
 
 function App() {
   const [exercises, setExercises] = useState([])
   const [selectedExercise, setSelectedExercise] = useState(null)
   const [isDetecting, setIsDetecting] = useState(false)
+  const [isOpenAIEnabled, setIsOpenAIEnabled] = useState(false)
+  const [voiceFeedbackEnabled, setVoiceFeedbackEnabled] = useState(true)
 
   useEffect(() => {
     // In a real app, this would fetch from a backend API
@@ -37,11 +41,41 @@ function App() {
     setIsDetecting(true)
   }
 
+  // Initialize OpenAI on component mount
+  useEffect(() => {
+    const initializeOpenAI = async () => {
+      console.log('Initializing OpenAI with environment variable API key')
+      console.log('Current environment:', import.meta.env.MODE)
+      
+      // Try to initialize OpenAI
+      const success = initOpenAI()
+      console.log('OpenAI initialization result:', success)
+      
+      setIsOpenAIEnabled(success)
+      if (success) {
+        console.log('OpenAI initialized successfully')
+      } else {
+        console.error('Failed to initialize OpenAI - check your .env file and API key')
+      }
+    }
+    
+    initializeOpenAI()
+  }, [])
+
+  const toggleVoiceFeedback = () => {
+    setVoiceFeedbackEnabled(prev => !prev)
+  }
+
   return (
     <div className="app-container">
-      <header>
-        <h1>Workout Pose Validator</h1>
-        <p>Real-time exercise form validation using your webcam</p>
+      <header className="app-header">
+        <h1>Form Correction AI</h1>
+        <div className="header-right">
+          <div className="status-indicator">
+            <div className={`status-dot ${isOpenAIEnabled ? 'enabled' : 'disabled'}`}></div>
+            <span>OpenAI: {isOpenAIEnabled ? 'Connected' : 'Not Connected'}</span>
+          </div>
+        </div>
       </header>
 
       <main>
@@ -57,6 +91,29 @@ function App() {
               <div className="exercise-info">
                 <h2>{selectedExercise.name}</h2>
                 <p>Selected exercise: {selectedExercise.name}</p>
+                
+                <div className="openai-setup">
+                  <h3>AI Voice Feedback</h3>
+                  <div className="status-indicator">
+                    <span className={`status-dot ${isOpenAIEnabled ? 'enabled' : 'disabled'}`}></span>
+                    <span className="status-text">
+                      {isOpenAIEnabled ? 'OpenAI API Connected' : 'OpenAI API Not Connected'}
+                    </span>
+                  </div>
+                  
+                  <div className="voice-toggle">
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={voiceFeedbackEnabled}
+                        onChange={toggleVoiceFeedback}
+                        disabled={!isOpenAIEnabled}
+                      />
+                      Enable Voice Feedback
+                    </label>
+                  </div>
+                </div>
+                
                 <button 
                   className="start-button" 
                   onClick={startDetection}
@@ -71,6 +128,8 @@ function App() {
             exercise={selectedExercise} 
             onBack={() => setIsDetecting(false)}
             isDetecting={isDetecting}
+            isOpenAIEnabled={isOpenAIEnabled}
+            voiceFeedbackEnabled={voiceFeedbackEnabled}
           />
         )}
       </main>
