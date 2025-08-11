@@ -18,9 +18,19 @@ export const initOpenAI = () => {
     console.log('Environment variables available:', Object.keys(import.meta.env));
     console.log('API Key found:', apiKey ? 'Yes (length: ' + apiKey.length + ')' : 'No');
     
-    if (!apiKey) {
-      console.error('OpenAI API key not found in environment variables');
-      return false;
+    if (!apiKey || apiKey === 'your_openai_api_key_here') {
+      console.warn('OpenAI API key not found or using placeholder value. Using mock mode.');
+      // Create a mock OpenAI client for demo purposes
+      openai = {
+        chat: {
+          completions: {
+            create: async () => ({
+              choices: [{ message: { content: 'This is a mock AI response. Please add a valid OpenAI API key to enable real AI feedback.' } }]
+            })
+          }
+        }
+      };
+      return true; // Return true to allow the app to function in mock mode
     }
     
     openai = new OpenAI({
@@ -31,7 +41,17 @@ export const initOpenAI = () => {
     return true;
   } catch (error) {
     console.error('Error initializing OpenAI client:', error);
-    return false;
+    // Create a mock OpenAI client as fallback
+    openai = {
+      chat: {
+        completions: {
+          create: async () => ({
+            choices: [{ message: { content: 'Error connecting to OpenAI. Using mock response.' } }]
+          })
+        }
+      }
+    };
+    return true; // Return true to allow the app to function in mock mode
   }
 };
 
@@ -88,6 +108,15 @@ export const getPoseFeedback = async (exercise, currentPhase, poseData, isCorrec
   console.log('Exercise data in getPoseFeedback:', exercise);
 
   try {
+    // Check if we're using the mock client
+    const isMockClient = typeof openai.chat.completions.create === 'function' && 
+                         openai.chat.completions.create.toString().includes('mock');
+    
+    if (isMockClient) {
+      console.log('Using mock OpenAI client for pose feedback');
+      return 'AI feedback unavailable. Please provide a valid OpenAI API key for real-time form analysis.';
+    }
+    
     // Format the pose data for GPT-4
     const keypoints = poseData.keypoints.map(kp => ({
       name: kp.name,

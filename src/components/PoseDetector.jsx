@@ -76,16 +76,21 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
     
     // Reset rep count when starting detection
     setRepCount(0);
+    setCurrentPhase('neutral');
+    setPhaseHistory([]);
+    setIsRepComplete(false);
+    setFeedback({ isCorrect: true, message: 'Get ready to start exercising...' });
+    setAIFeedback('');
     
     let animationFrameId;
     let lastPhase = 'neutral';
     const phaseSequence = []; // Convert to const since it's not being modified
     let repInProgress = false;
-    let confidenceThreshold = 0.3; // Lower threshold for better detection
+    let confidenceThreshold = 0.2; // Even lower threshold for better detection
     let frameCount = 0;
     let lastKneeAngle = 0;
     let kneeAngleBuffer = [];
-    const bufferSize = 3; // Smaller buffer for more responsive detection
+    const bufferSize = 2; // Even smaller buffer for more responsive detection
 
     const detect = async () => {
       try {
@@ -297,7 +302,7 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
           }
         } else {
           // In transition between up and down
-          const threshold = 2; // Threshold for movement detection
+          const threshold = 1.5; // Lower threshold for more responsive detection
           if (Math.abs(kneeAngleDelta) > threshold) {
             phase = kneeAngleDelta < -threshold ? 'going_down' : 'going_up';
             feedbackMessage = phase === 'going_down' ? 
@@ -347,7 +352,7 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
           }
         } else {
           // In transition between up and down - simplified detection with lower threshold
-          const threshold = 2; // Lower threshold for more responsive detection
+          const threshold = 1.5; // Lower threshold for more responsive detection
           if (Math.abs(kneeAngleDelta) > threshold) {
             phase = kneeAngleDelta < -threshold ? 'going_down' : 'going_up';
             feedbackMessage = phase === 'going_down' ? 
@@ -378,15 +383,25 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
       // Complete a rep when user goes from down/going_up to up phase
       if ((lastPhase === 'down' || lastPhase === 'going_up') && phase === 'up' && repInProgress) {
         console.log('Completing rep - reached UP phase');
+        
+        // Use a more reliable way to increment rep count
         setRepCount(prevCount => {
-          console.log('Incrementing rep count from', prevCount, 'to', prevCount + 1);
-          return prevCount + 1;
+          const newCount = prevCount + 1;
+          console.log('Incrementing rep count from', prevCount, 'to', newCount);
+          return newCount;
         });
+        
+        // Reset rep tracking state
         repInProgress = false;
         setIsRepComplete(true);
         
+        // Set a timeout to reset the rep complete indicator after 2 seconds
+        setTimeout(() => {
+          setIsRepComplete(false);
+        }, 2000);
+        
         // Reset phase sequence after completing a rep
-phaseSequence.length = 0; // Clear the array while keeping the reference
+        phaseSequence.length = 0; // Clear the array while keeping the reference
         
         // Show completion message
         feedbackMessage = 'Great job! Rep completed!';
@@ -403,16 +418,17 @@ phaseSequence.length = 0; // Clear the array while keeping the reference
       setFeedback({ isCorrect, message: feedbackMessage });
       
       // Get AI feedback if enabled and not too frequent
-      if (isOpenAIEnabled && pose) {
+      if (pose) {
         const now = Date.now();
         // Only request AI feedback every 3 seconds to avoid excessive API calls
         if (now - lastAIRequestTime > 3000) {
+          console.log('Triggering AI feedback request');
           setLastAIRequestTime(now);
           getAIFeedback(pose, phase, isCorrect, feedbackMessage);
         }
-      } else if (!isOpenAIEnabled) {
-        // If OpenAI is not enabled, use the current feedback message
-        setAIFeedback(feedbackMessage);
+      } else {
+        console.log('No pose data available for AI feedback');
+        setAIFeedback('Waiting for pose detection...');
       }
     };
 
@@ -528,14 +544,14 @@ phaseSequence.length = 0; // Clear the array while keeping the reference
   // Function to get AI feedback from OpenAI
   const getAIFeedback = async (pose, phase, isCorrect, currentFeedbackMsg) => {
     try {
-      if (!isOpenAIEnabled || !pose) {
-        console.log('AI feedback skipped:', { isOpenAIEnabled, poseAvailable: !!pose });
-        // If OpenAI is not enabled, use the current feedback message
-        setAIFeedback(currentFeedbackMsg || 'AI feedback not available');
+      if (!pose) {
+        console.log('AI feedback skipped: No pose data available');
+        setAIFeedback('Waiting for pose detection...');
         return;
       }
       
       console.log('Requesting AI feedback for phase:', phase, 'Exercise:', exerciseData.name);
+      console.log('OpenAI enabled:', isOpenAIEnabled);
       console.log('Pose data sample:', { 
         keypoints: pose.keypoints.length, 
         sampleKeypoint: pose.keypoints[0] 
@@ -559,9 +575,9 @@ phaseSequence.length = 0; // Clear the array while keeping the reference
 
   return (
     <div className="pose-detector">
-      <div className="controls">
-        <button onClick={onBack}>Back</button>
-        <h2 style={{ fontWeight: 'bold', fontSize: '1.5em', color: '#333' }}>{exerciseData.name || 'Not selected'}</h2>
+      <div className="controls" style={{ backgroundColor: '#f0f8ff', padding: '15px', borderRadius: '8px', marginBottom: '20px', boxShadow: '0 4px 8px rgba(0,0,0,0.1)' }}>
+        <button onClick={onBack} style={{ marginRight: '15px', padding: '8px 15px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Back</button>
+        <h2 style={{ fontWeight: 'bold', fontSize: '2em', color: '#007bff', display: 'inline-block', margin: '10px 0', textShadow: '1px 1px 2px rgba(0,0,0,0.1)' }}>{exerciseData.name || 'Not selected'}</h2>
       </div>
       <div className="detection-area">
         <div className="webcam-container">
@@ -613,30 +629,59 @@ phaseSequence.length = 0; // Clear the array while keeping the reference
           />
         </div>
 
-        <div className="feedback-container">
-            <h3 style={{ fontWeight: 'bold', fontSize: '1.4em', color: '#333', marginBottom: '10px' }}>Exercise: {exerciseData.name || 'Not selected'}</h3>
-            <div className={`feedback ${feedback.isCorrect ? 'correct' : 'incorrect'}`}>
+        <div className="feedback-container" style={{ backgroundColor: '#f8f9fa', padding: '20px', borderRadius: '10px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', margin: '20px 0' }}>
+            <h3 style={{ fontWeight: 'bold', fontSize: '2em', color: '#ecf0f1', marginBottom: '15px', textAlign: 'center', padding: '15px', backgroundColor: '#2c3e50', borderRadius: '8px', boxShadow: '0 4px 8px rgba(0,0,0,0.2)', border: '2px solid #3498db' }}>Exercise: {exerciseData.name || 'Not selected'}</h3>
+            <div className={`feedback ${feedback.isCorrect ? 'correct' : 'incorrect'}`} style={{ margin: '15px 0', padding: '10px', backgroundColor: '#fff', borderRadius: '6px', border: '1px solid #dee2e6' }}>
                <p>{feedback.message}</p>
              </div>
-             {isOpenAIEnabled && (
-               <div className="ai-feedback">
-                 <h3>AI Voice Feedback:</h3>
-                 <p>{aiFeedback || 'Analyzing your form...'}</p>
-               </div>
-             )}
-             <div className="stats">
-               <div className="rep-counter" style={{ fontWeight: 'bold', fontSize: '1.3em', margin: '10px 0', color: '#007bff' }}>
-                 <p className="rep-count">Reps: {repCount}</p>
+             <div className="ai-feedback" style={{
+                backgroundColor: '#34495e',
+                padding: '15px',
+                borderRadius: '8px',
+                boxShadow: '0 4px 8px rgba(0,0,0,0.2)',
+                margin: '10px 0',
+                border: '2px solid #3498db'
+              }}>
+                <h3 style={{ 
+                  fontSize: '20px', 
+                  margin: '0 0 10px 0', 
+                  color: '#ecf0f1',
+                  fontWeight: 'bold'
+                }}>AI Voice Feedback:</h3>
+                <p style={{ 
+                  fontSize: '16px', 
+                  margin: '0', 
+                  color: '#ecf0f1',
+                  fontWeight: '500'
+                }}>{aiFeedback || 'Analyzing your form...'}</p>
+              </div>
+             <div className="stats" style={{ backgroundColor: '#e9ecef', padding: '15px', borderRadius: '8px', margin: '20px 0', boxShadow: '0 2px 6px rgba(0,0,0,0.1)' }}>
+               <div className="rep-counter" style={{ fontWeight: 'bold', fontSize: '2.2em', margin: '0', color: '#ecf0f1', backgroundColor: '#2c3e50', padding: '15px 25px', borderRadius: '30px', boxShadow: '0 4px 8px rgba(0,0,0,0.2)', textAlign: 'center', display: 'inline-block', border: '2px solid #3498db', animation: isRepComplete ? 'pulse 1s' : 'none' }}>
+                 <p className="rep-count" style={{ margin: '0' }}>Reps: {repCount}</p>
                  {isRepComplete && (
-                   <div className="rep-complete-indicator">
+                   <div className="rep-complete-indicator" style={{ color: '#2ecc71', fontWeight: 'bold', fontSize: '1.2em', animation: 'pulse 1s infinite', marginTop: '5px' }}>
                      Rep Complete! ✓
                    </div>
                  )}
                </div>
             
-            <div className="phase-indicator">
-              <p className="current-phase">Current Phase: 
-                <span className={`phase ${currentPhase}`}>
+            <div className="phase-indicator" style={{ backgroundColor: '#fff3cd', padding: '15px', borderRadius: '8px', margin: '20px 0', border: '1px solid #ffeeba', boxShadow: '0 2px 6px rgba(0,0,0,0.1)' }}>
+              <p className="current-phase" style={{ fontSize: '1.3em', fontWeight: 'bold', margin: '0', color: '#856404' }}>Current Phase: 
+                <span className={`phase ${currentPhase}`} style={{ 
+                  display: 'inline-block', 
+                  marginLeft: '10px', 
+                  padding: '5px 15px', 
+                  borderRadius: '20px', 
+                  backgroundColor: currentPhase === 'up' ? '#d4edda' : 
+                                   currentPhase === 'down' ? '#f8d7da' : 
+                                   currentPhase === 'going_up' ? '#cce5ff' : 
+                                   currentPhase === 'going_down' ? '#fff3cd' : '#e2e3e5',
+                  color: currentPhase === 'up' ? '#155724' : 
+                         currentPhase === 'down' ? '#721c24' : 
+                         currentPhase === 'going_up' ? '#004085' : 
+                         currentPhase === 'going_down' ? '#856404' : '#383d41',
+                  fontWeight: 'bold'
+                }}>
                   {currentPhase === 'going_up' ? 'Rising' : 
                    currentPhase === 'going_down' ? 'Lowering' : 
                    currentPhase || 'neutral'}
@@ -645,30 +690,56 @@ phaseSequence.length = 0; // Clear the array while keeping the reference
             </div>
             
             {/* Phase history visualization */}
-            <div className="phase-history">
-              <p>Movement Sequence:</p>
-              <div className="phase-dots">
+            <div className="phase-history" style={{ backgroundColor: '#34495e', padding: '15px', borderRadius: '8px', margin: '20px 0', border: '2px solid #3498db', boxShadow: '0 4px 8px rgba(0,0,0,0.2)' }}>
+              <p style={{ fontSize: '1.3em', fontWeight: 'bold', marginBottom: '10px', color: '#ecf0f1' }}>Movement Sequence:</p>
+              <div className="phase-dots" style={{ display: 'flex', justifyContent: 'center', gap: '12px', flexWrap: 'wrap' }}>
                 {phaseHistory.map((phase, index) => (
                   <span 
                     key={index} 
                     className={`phase-dot ${phase}`}
+                    style={{
+                      display: 'inline-block',
+                      width: '35px',
+                      height: '35px',
+                      lineHeight: '35px',
+                      textAlign: 'center',
+                      borderRadius: '50%',
+                      backgroundColor: phase === 'up' ? '#2ecc71' : 
+                                       phase === 'down' ? '#e74c3c' : 
+                                       phase === 'going_up' ? '#3498db' : 
+                                       phase === 'going_down' ? '#f39c12' : '#95a5a6',
+                      boxShadow: '0 3px 6px rgba(0,0,0,0.3)',
+                      transition: 'all 0.3s ease',
+                      color: '#fff',
+                      fontWeight: 'bold'
+                    }}
                     title={phase === 'going_up' ? 'Rising' : 
                            phase === 'going_down' ? 'Lowering' : phase}
-                  ></span>
+                  >
+                    {phase.charAt(0).toUpperCase()}
+                  </span>
                 ))}
               </div>
             </div>
             
-            <div className="exercise-progress">
-              <p>Progress:</p>
-              <div className="progress-bar">
+            <div className="exercise-progress" style={{ backgroundColor: '#34495e', padding: '15px', borderRadius: '8px', margin: '20px 0', boxShadow: '0 4px 8px rgba(0,0,0,0.2)', border: '2px solid #3498db' }}>
+              <p style={{ fontSize: '1.2em', fontWeight: 'bold', marginBottom: '10px', color: '#ecf0f1' }}>Progress:</p>
+              <div className="progress-bar" style={{ height: '25px', backgroundColor: '#2c3e50', borderRadius: '15px', overflow: 'hidden', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.2)' }}>
                 <div 
                   className={`progress-indicator ${currentPhase}`}
                   style={{
                     width: currentPhase === 'up' ? '100%' : 
                            currentPhase === 'going_up' ? '75%' : 
                            currentPhase === 'going_down' ? '25%' : 
-                           currentPhase === 'down' ? '0%' : '50%'
+                           currentPhase === 'down' ? '0%' : '50%',
+                    height: '100%',
+                    backgroundColor: currentPhase === 'up' ? '#2ecc71' : 
+                                     currentPhase === 'going_up' ? '#3498db' : 
+                                     currentPhase === 'going_down' ? '#f39c12' : 
+                                     currentPhase === 'down' ? '#e74c3c' : '#95a5a6',
+                    transition: 'width 0.3s ease-in-out',
+                    borderRadius: '15px',
+                    boxShadow: '0 1px 2px rgba(0,0,0,0.1)'
                   }}
                 ></div>
               </div>
