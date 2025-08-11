@@ -3,8 +3,8 @@ import Webcam from 'react-webcam';
 import * as poseDetection from '@tensorflow-models/pose-detection';
 import * as tf from '@tensorflow/tfjs-core';
 import '@tensorflow/tfjs-backend-webgl';
-import { calculateAngle } from '../utils/poseUtils';
-import { getPoseFeedback } from '../services/openaiService';
+import { calculateAngle, smoothAngle, EXERCISE_THRESHOLDS, repCountingStateMachine, validatePoseForm } from '../utils/poseUtils';
+import { getPoseFeedback, resetFormIssuesHistory } from '../services/openaiService';
 import VoiceFeedback from './VoiceFeedback';
 
 const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFeedbackEnabled }) => {
@@ -81,16 +81,21 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
     setIsRepComplete(false);
     setFeedback({ isCorrect: true, message: 'Get ready to start exercising...' });
     setAIFeedback('');
+    resetFormIssuesHistory(); // Reset form issues history for OpenAI
     
     let animationFrameId;
     let lastPhase = 'neutral';
-    const phaseSequence = []; // Convert to const since it's not being modified
-    let repInProgress = false;
-    let confidenceThreshold = 0.2; // Even lower threshold for better detection
-    let frameCount = 0;
-    let lastKneeAngle = 0;
-    let kneeAngleBuffer = [];
-    const bufferSize = 2; // Even smaller buffer for more responsive detection
+    let confidenceThreshold = 0.3; // Higher threshold for better detection reliability
+    
+    // State machine for rep counting
+    const repStateRef = useRef({
+      currentState: 'START',
+      angleBuffer: [],
+      lastAngle: 0,
+      repInProgress: false,
+      exerciseType: exerciseData.exercise_id
+    });
+    let repState = repStateRef.current;
 
     const detect = async () => {
       try {
@@ -163,14 +168,32 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
       // Determine required keypoints based on exercise type
       let requiredKeypoints = [];
       if (exerciseData.exercise_id === 'pushup1') {
+        if (!repState.lockedArm) {
+          repState.lockedArm = keypoints.left_elbow.score >= keypoints.right_elbow.score ? 'left' : 'right';
+        }
         // For push-ups, we need shoulders, elbows, and wrists
         requiredKeypoints = [
           'left_shoulder', 'right_shoulder',
           'left_elbow', 'right_elbow',
           'left_wrist', 'right_wrist'
         ];
+      } else if (exerciseData.exercise_id === 'squat1') {
+        // For squats, we need hips, knees, and ankles
+        requiredKeypoints = [
+          'left_hip', 'right_hip',
+          'left_knee', 'right_knee',
+          'left_ankle', 'right_ankle'
+        ];
+      } else if (exerciseData.exercise_id === 'lunge1') {
+        // For lunges, we need hips, knees, ankles and feet
+        requiredKeypoints = [
+          'left_hip', 'right_hip',
+          'left_knee', 'right_knee',
+          'left_ankle', 'right_ankle',
+          'left_foot', 'right_foot'
+        ];
       } else {
-        // For squats and other exercises, we need hips, knees, and ankles
+        // Default for other exercises
         requiredKeypoints = [
           'left_hip', 'right_hip',
           'left_knee', 'right_knee',
@@ -193,178 +216,181 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
         return;
       }
       
-      // Calculate angles based on exercise type
-      let kneeAngle, hipAngle, elbowAngle;
+      // Calculate primary angle based on exercise type
+      let primaryAngle = 0;
+      let secondaryAngle = 0;
       let phase = 'neutral';
       let isCorrect = true;
       let feedbackMessage = 'Good form!';
       
+      // Calculate angles based on exercise type
       if (exerciseData.exercise_id === 'pushup1') {
+        if (!repState.lockedArm) {
+          repState.lockedArm = keypoints.left_elbow.score >= keypoints.right_elbow.score ? 'left' : 'right';
+        }
         // For push-ups, calculate elbow angles
         const leftElbowAngle = calculateAngle(
-          [keypoints.left_shoulder.x, keypoints.left_shoulder.y],
-          [keypoints.left_elbow.x, keypoints.left_elbow.y],
-          [keypoints.left_wrist.x, keypoints.left_wrist.y]
+          keypoints.left_shoulder,
+          keypoints.left_elbow,
+          keypoints.left_wrist
         );
         
         const rightElbowAngle = calculateAngle(
-          [keypoints.right_shoulder.x, keypoints.right_shoulder.y],
-          [keypoints.right_elbow.x, keypoints.right_elbow.y],
-          [keypoints.right_wrist.x, keypoints.right_wrist.y]
+          keypoints.right_shoulder,
+          keypoints.right_elbow,
+          keypoints.right_wrist
         );
         
         // Use the better visible arm or average if both are visible
-        if (keypoints.left_elbow.score > keypoints.right_elbow.score) {
-          elbowAngle = leftElbowAngle;
-          console.log('Using left elbow angle:', Math.round(elbowAngle));
-        } else if (keypoints.right_elbow.score > keypoints.left_elbow.score) {
-          elbowAngle = rightElbowAngle;
-          console.log('Using right elbow angle:', Math.round(elbowAngle));
+        if (repState.lockedArm === 'left') {
+          primaryAngle = leftElbowAngle;
+          console.log('Using left elbow angle:', Math.round(primaryAngle));
+        } else if (repState.lockedArm === 'right') {
+          primaryAngle = rightElbowAngle;
+          console.log('Using right elbow angle:', Math.round(primaryAngle));
         } else {
-          elbowAngle = (leftElbowAngle + rightElbowAngle) / 2;
-          console.log('Using average elbow angle:', Math.round(elbowAngle));
+          primaryAngle = (leftElbowAngle + rightElbowAngle) / 2;
+          console.log('Using average elbow angle:', Math.round(primaryAngle));
         }
         
-        // Use elbow angle for knee angle in the existing logic
-        kneeAngle = elbowAngle;
-      } else {
-        // For squats and other exercises, calculate knee and hip angles
+        // Calculate back angle as secondary angle
+        secondaryAngle = calculateAngle(
+          keypoints.left_shoulder,
+          keypoints.left_hip,
+          keypoints.left_knee
+        );
+      } else if (exerciseData.exercise_id === 'squat1') {
+        // For squats, calculate knee and hip angles
         const leftKneeAngle = calculateAngle(
-          [keypoints.left_hip.x, keypoints.left_hip.y],
-          [keypoints.left_knee.x, keypoints.left_knee.y],
-          [keypoints.left_ankle.x, keypoints.left_ankle.y]
+          keypoints.left_hip,
+          keypoints.left_knee,
+          keypoints.left_ankle
         );
         
         const rightKneeAngle = calculateAngle(
-          [keypoints.right_hip.x, keypoints.right_hip.y],
-          [keypoints.right_knee.x, keypoints.right_knee.y],
-          [keypoints.right_ankle.x, keypoints.right_ankle.y]
+          keypoints.right_hip,
+          keypoints.right_knee,
+          keypoints.right_ankle
         );
         
         // Use the better visible leg or average if both are visible
         if (keypoints.left_knee.score > keypoints.right_knee.score) {
-          kneeAngle = leftKneeAngle;
-          console.log('Using left knee angle:', Math.round(kneeAngle));
+          primaryAngle = leftKneeAngle;
+          console.log('Using left knee angle:', Math.round(primaryAngle));
         } else if (keypoints.right_knee.score > keypoints.left_knee.score) {
-          kneeAngle = rightKneeAngle;
-          console.log('Using right knee angle:', Math.round(kneeAngle));
+          primaryAngle = rightKneeAngle;
+          console.log('Using right knee angle:', Math.round(primaryAngle));
         } else {
-          kneeAngle = (leftKneeAngle + rightKneeAngle) / 2;
-          console.log('Using average knee angle:', Math.round(kneeAngle));
+          primaryAngle = (leftKneeAngle + rightKneeAngle) / 2;
+          console.log('Using average knee angle:', Math.round(primaryAngle));
         }
         
-        // Calculate hip angle (simplified)
-        hipAngle = calculateAngle(
-          [keypoints.left_shoulder.x, keypoints.left_shoulder.y],
-          [keypoints.left_hip.x, keypoints.left_hip.y],
-          [keypoints.left_knee.x, keypoints.left_knee.y]
+        // Calculate hip angle as secondary angle
+        secondaryAngle = calculateAngle(
+          keypoints.left_shoulder,
+          keypoints.left_hip,
+          keypoints.left_knee
         );
-      }
-      
-      // Smooth the knee angle using a simple moving average
-      kneeAngleBuffer.push(kneeAngle);
-      if (kneeAngleBuffer.length > bufferSize) {
-        kneeAngleBuffer.shift();
-      }
-      
-      const smoothedKneeAngle = kneeAngleBuffer.reduce((sum, angle) => sum + angle, 0) / kneeAngleBuffer.length;
-      
-      // Calculate angle change rate for movement detection
-      const kneeAngleDelta = smoothedKneeAngle - lastKneeAngle;
-      lastKneeAngle = smoothedKneeAngle;
-      
-      // Different phase detection based on exercise type
-      if (exerciseData.exercise_id === 'pushup1') {
-        // For push-ups, we use elbow angle instead of knee angle
-        if (smoothedKneeAngle > 150) { // Elbow extended (up position)
-          phase = 'up';
-          feedbackMessage = `In UP position (elbow: ${Math.round(smoothedKneeAngle)}°)`;
-          console.log('Phase: UP (Push-up)');
-          
-          // Validate against canonical data for push-ups
-          const elbowExpected = exerciseData.phases.find(p => p.phase === 'up')?.angles.find(a => a.joint === 'elbow');
-          
-          if (elbowExpected && Math.abs(smoothedKneeAngle - elbowExpected.expected) > elbowExpected.tolerance) {
-            isCorrect = false;
-            feedbackMessage = `Extend your arms more (current: ${Math.round(smoothedKneeAngle)}°, target: ${elbowExpected.expected}°)`;
-          }
-        } else if (smoothedKneeAngle < 100) { // Elbow bent (down position)
-          phase = 'down';
-          feedbackMessage = `In DOWN position (elbow: ${Math.round(smoothedKneeAngle)}°)`;
-          console.log('Phase: DOWN (Push-up)');
-          
-          // Validate against canonical data for push-ups
-          const elbowExpected = exerciseData.phases.find(p => p.phase === 'down')?.angles.find(a => a.joint === 'elbow');
-          
-          if (elbowExpected && Math.abs(smoothedKneeAngle - elbowExpected.expected) > elbowExpected.tolerance) {
-            isCorrect = false;
-            feedbackMessage = `Lower your body more (current: ${Math.round(smoothedKneeAngle)}°, target: ${elbowExpected.expected}°)`;
-          }
+      } else if (exerciseData.exercise_id === 'lunge1') {
+        // For lunges, calculate front knee angle
+        const leftKneeAngle = calculateAngle(
+          keypoints.left_hip,
+          keypoints.left_knee,
+          keypoints.left_ankle
+        );
+        
+        const rightKneeAngle = calculateAngle(
+          keypoints.right_hip,
+          keypoints.right_knee,
+          keypoints.right_ankle
+        );
+        
+        // Use the better visible leg or average if both are visible
+        if (keypoints.left_knee.score > keypoints.right_knee.score) {
+          primaryAngle = leftKneeAngle;
+          console.log('Using left knee angle for lunge:', Math.round(primaryAngle));
         } else {
-          // In transition between up and down
-          const threshold = 1.5; // Lower threshold for more responsive detection
-          if (Math.abs(kneeAngleDelta) > threshold) {
-            phase = kneeAngleDelta < -threshold ? 'going_down' : 'going_up';
-            feedbackMessage = phase === 'going_down' ? 
-              `Lowering (elbow: ${Math.round(smoothedKneeAngle)}°)` : 
-              `Rising (elbow: ${Math.round(smoothedKneeAngle)}°)`;
-            console.log('Movement detected:', phase, 'with delta:', Math.round(kneeAngleDelta));
-          } else {
-            phase = lastPhase !== 'neutral' ? lastPhase : 'neutral';
-            feedbackMessage = `Hold steady (elbow: ${Math.round(smoothedKneeAngle)}°)`;
-          }
+          primaryAngle = rightKneeAngle;
+          console.log('Using right knee angle for lunge:', Math.round(primaryAngle));
+        }
+        
+        // Calculate back knee angle as secondary angle
+        if (keypoints.left_knee.score > keypoints.right_knee.score) {
+          secondaryAngle = rightKneeAngle;
+        } else {
+          secondaryAngle = leftKneeAngle;
         }
       } else {
-        // For squats and other exercises
-        if (smoothedKneeAngle < 100) { // Deep squat position
-          phase = 'down';
-          feedbackMessage = `In DOWN position (knee: ${Math.round(smoothedKneeAngle)}°)`;
-          
-          // Validate against canonical data
-          const kneeExpected = exerciseData.phases.find(p => p.phase === 'down')?.angles.find(a => a.joint === 'knee');
-          const hipExpected = exerciseData.phases.find(p => p.phase === 'down')?.angles.find(a => a.joint === 'hip');
-          
-          if (kneeExpected && Math.abs(smoothedKneeAngle - kneeExpected.expected) > kneeExpected.tolerance) {
-            isCorrect = false;
-            feedbackMessage = `Adjust your knee angle (current: ${Math.round(smoothedKneeAngle)}°, target: ${kneeExpected.expected}°)`;
-          }
-          
-          if (hipExpected && hipAngle > 0 && Math.abs(hipAngle - hipExpected.expected) > hipExpected.tolerance) {
-            isCorrect = false;
-            feedbackMessage = 'Adjust your hip position';
-          }
-        } else if (smoothedKneeAngle > 160) { // Standing position
-          phase = 'up';
-          feedbackMessage = `In UP position (knee: ${Math.round(smoothedKneeAngle)}°)`;
-          
-          // Validate against canonical data
-          const kneeExpected = exerciseData.phases.find(p => p.phase === 'up')?.angles.find(a => a.joint === 'knee');
-          const hipExpected = exerciseData.phases.find(p => p.phase === 'up')?.angles.find(a => a.joint === 'hip');
-          
-          if (kneeExpected && Math.abs(smoothedKneeAngle - kneeExpected.expected) > kneeExpected.tolerance) {
-            isCorrect = false;
-            feedbackMessage = `Straighten your legs more (current: ${Math.round(smoothedKneeAngle)}°, target: ${kneeExpected.expected}°)`;
-          }
-          
-          if (hipExpected && hipAngle > 0 && Math.abs(hipAngle - hipExpected.expected) > hipExpected.tolerance) {
-            isCorrect = false;
-            feedbackMessage = 'Stand up straighter';
-          }
-        } else {
-          // In transition between up and down - simplified detection with lower threshold
-          const threshold = 1.5; // Lower threshold for more responsive detection
-          if (Math.abs(kneeAngleDelta) > threshold) {
-            phase = kneeAngleDelta < -threshold ? 'going_down' : 'going_up';
-            feedbackMessage = phase === 'going_down' ? 
-              `Lowering (knee: ${Math.round(smoothedKneeAngle)}°)` : 
-              `Rising (knee: ${Math.round(smoothedKneeAngle)}°)`;
-            console.log('Movement detected:', phase, 'with delta:', Math.round(kneeAngleDelta));
-          } else {
-            // Not enough movement to determine direction
-            phase = lastPhase !== 'neutral' ? lastPhase : 'neutral';
-            feedbackMessage = `Hold steady (knee: ${Math.round(smoothedKneeAngle)}°)`;
-          }
+        // Default to squat-like calculation for other exercises
+        const leftKneeAngle = calculateAngle(
+          keypoints.left_hip,
+          keypoints.left_knee,
+          keypoints.left_ankle
+        );
+        
+        const rightKneeAngle = calculateAngle(
+          keypoints.right_hip,
+          keypoints.right_knee,
+          keypoints.right_ankle
+        );
+        
+        primaryAngle = (leftKneeAngle + rightKneeAngle) / 2;
+        console.log('Using average knee angle:', Math.round(primaryAngle));
+      }
+      
+      // Apply smoothing to the primary angle
+      const smoothedPrimaryAngle = smoothAngle(primaryAngle, repState.angleBuffer, 5);
+      
+      // Use the state machine to determine phase and count reps
+      const { newState, newPhase, repComplete } = repCountingStateMachine(
+        repState.currentState,
+        smoothedPrimaryAngle,
+        pose.score,
+        exerciseData.exercise_id
+      );
+      
+      // Update rep state
+      repState.currentState = newState;
+      phase = newPhase;
+      
+      // Handle rep completion
+      if (repComplete) {
+        console.log('Completing rep - state machine transition');
+        
+        // Increment rep count
+        setRepCount(prevCount => {
+          const newCount = prevCount + 1;
+          console.log('Incrementing rep count from', prevCount, 'to', newCount);
+          return newCount;
+        });
+        
+        // Set rep complete flag for UI and voice feedback
+        setIsRepComplete(true);
+        
+        // Reset rep complete flag after 2 seconds
+        setTimeout(() => {
+          setIsRepComplete(false);
+        }, 2000);
+      }
+      
+      // Validate pose form using our utility function
+      const validationResult = validatePoseForm(
+        { primary: smoothedPrimaryAngle, secondary: secondaryAngle },
+        EXERCISE_THRESHOLDS[exerciseData.exercise_id]?.elbow || EXERCISE_THRESHOLDS[exerciseData.exercise_id]?.knee || EXERCISE_THRESHOLDS[exerciseData.exercise_id],
+        phase
+      );
+      
+      isCorrect = validationResult.isCorrect;
+      feedbackMessage = validationResult.message;
+      
+      // Add angle information to feedback message for debugging
+      if (exerciseData.exercise_id === 'pushup1') {
+        if (!repState.lockedArm) {
+          repState.lockedArm = keypoints.left_elbow.score >= keypoints.right_elbow.score ? 'left' : 'right';
         }
+        feedbackMessage += ` (elbow: ${Math.round(smoothedPrimaryAngle)}°)`;
+      } else {
+        feedbackMessage += ` (knee: ${Math.round(smoothedPrimaryAngle)}°)`;
       }
       
       // Update phase history for UI display
@@ -373,44 +399,19 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
         return newHistory;
       });
       
-      // Start tracking a rep when user enters going_down or down phase
-      if ((phase === 'down' || phase === 'going_down') && !repInProgress) {
-        console.log('Starting rep - movement detected');
-        repInProgress = true;
-        setIsRepComplete(false);
-      }
-      
-      // Complete a rep when user goes from down/going_up to up phase
-      if ((lastPhase === 'down' || lastPhase === 'going_up') && phase === 'up' && repInProgress) {
-        console.log('Completing rep - reached UP phase');
-        
-        // Use a more reliable way to increment rep count
-        setRepCount(prevCount => {
-          const newCount = prevCount + 1;
-          console.log('Incrementing rep count from', prevCount, 'to', newCount);
-          return newCount;
-        });
-        
-        // Reset rep tracking state
-        repInProgress = false;
-        setIsRepComplete(true);
-        
-        // Set a timeout to reset the rep complete indicator after 2 seconds
-        setTimeout(() => {
-          setIsRepComplete(false);
-        }, 2000);
-        
-        // Reset phase sequence after completing a rep
-        phaseSequence.length = 0; // Clear the array while keeping the reference
+      // Reset state machine after completing a rep if needed
+      if (repComplete) {
+        // Reset state machine after completing a rep
+        repState.currentState = 'START';
+        repState.repInProgress = false;
         
         // Show completion message
         feedbackMessage = 'Great job! Rep completed!';
       }
       
       // Debug information
-      frameCount++;
-      if (frameCount % 5 === 0) { // Log more frequently for better debugging
-        console.log(`Current knee angle: ${Math.round(smoothedKneeAngle)}°, Phase: ${phase}, Reps: ${repCount}, RepInProgress: ${repInProgress}`);
+      if (repState && repState.angleBuffer && repState.angleBuffer.length > 0) {
+        console.log(`Current angle: ${Math.round(repState.angleBuffer[repState.angleBuffer.length-1])}°, Phase: ${phase}, Reps: ${repCount}, State: ${repState.currentState}`);
       }
 
       lastPhase = phase;
@@ -539,14 +540,28 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
       console.log('Cleaning up detection loop');
       cancelAnimationFrame(animationFrameId);
     };
-  }, [detector, exercise, isDetecting]);
+  }, [detector, exercise, isDetecting, isOpenAIEnabled, voiceFeedbackEnabled]);
 
   // Function to get AI feedback from OpenAI
   const getAIFeedback = async (pose, phase, isCorrect, currentFeedbackMsg) => {
     try {
-      if (!pose) {
-        console.log('AI feedback skipped: No pose data available');
+      if (!pose || !isOpenAIEnabled) {
+        console.log('AI feedback skipped: No pose data available or OpenAI disabled');
         setAIFeedback('Waiting for pose detection...');
+        return;
+      }
+      
+      const now = Date.now();
+      // Increase debounce time to 10 seconds to reduce API calls
+      if (now - lastAIRequestTime < 10000) {
+        console.log('Skipping AI feedback request - too soon since last request');
+        return; // Limit to once every 10 seconds
+      }
+      
+      // Only make requests when there's a significant event (rep completion or form error)
+      const shouldRequestFeedback = isRepComplete || !isCorrect;
+      if (!shouldRequestFeedback) {
+        console.log('Skipping AI feedback - no significant event detected');
         return;
       }
       
@@ -556,6 +571,8 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
         keypoints: pose.keypoints.length, 
         sampleKeypoint: pose.keypoints[0] 
       });
+      
+      setLastAIRequestTime(now);
       
       const aiResponse = await getPoseFeedback(
         exerciseData,
@@ -656,7 +673,7 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
                 }}>{aiFeedback || 'Analyzing your form...'}</p>
               </div>
              <div className="stats" style={{ backgroundColor: '#e9ecef', padding: '15px', borderRadius: '8px', margin: '20px 0', boxShadow: '0 2px 6px rgba(0,0,0,0.1)' }}>
-               <div className="rep-counter" style={{ fontWeight: 'bold', fontSize: '2.2em', margin: '0', color: '#ecf0f1', backgroundColor: '#2c3e50', padding: '15px 25px', borderRadius: '30px', boxShadow: '0 4px 8px rgba(0,0,0,0.2)', textAlign: 'center', display: 'inline-block', border: '2px solid #3498db', animation: isRepComplete ? 'pulse 1s' : 'none' }}>
+               <div className="rep-counter" style={{ fontWeight: 'bold', fontSize: '2.2em', margin: '0', color: '#ffffff', backgroundColor: '#2980b9', padding: '15px 25px', borderRadius: '30px', boxShadow: '0 4px 8px rgba(0,0,0,0.2)', textAlign: 'center', display: 'inline-block', border: '2px solid #3498db', animation: isRepComplete ? 'pulse 1s' : 'none' }}>
                  <p className="rep-count" style={{ margin: '0' }}>Reps: {repCount}</p>
                  {isRepComplete && (
                    <div className="rep-complete-indicator" style={{ color: '#2ecc71', fontWeight: 'bold', fontSize: '1.2em', animation: 'pulse 1s infinite', marginTop: '5px' }}>
@@ -752,7 +769,9 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
       {voiceFeedbackEnabled && isOpenAIEnabled && (
         <VoiceFeedback 
           feedback={aiFeedback} 
-          enabled={voiceFeedbackEnabled && isDetecting} 
+          enabled={voiceFeedbackEnabled && isDetecting}
+          formError={!feedback.isCorrect}
+          repComplete={isRepComplete}
         />
       )}
     </div>

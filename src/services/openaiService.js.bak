@@ -1,13 +1,8 @@
 import OpenAI from 'openai';
 
 // Initialize the OpenAI client
-// Using environment variables for Azure OpenAI configuration
+// Using environment variable for API key
 let openai = null;
-
-// Azure OpenAI configuration
-const AZURE_OPENAI_ENDPOINT = 'https://actofitocavioropenai.openai.azure.com/';
-const OPENAI_MODEL = 'gpt-4o-mini';
-const OPENAI_API_VERSION = '2024-02-15'; // Updated API version
 
 // Debounce control for API requests
 let lastRequestTime = 0;
@@ -17,7 +12,7 @@ const REQUEST_DEBOUNCE_MS = 10000; // 10 seconds between requests
 let formIssuesHistory = [];
 
 /**
- * Initialize the OpenAI client with Azure OpenAI configuration
+ * Initialize the OpenAI client with the API key from environment variable
  * @returns {boolean} - Whether initialization was successful
  */
 export const initOpenAI = () => {
@@ -25,59 +20,46 @@ export const initOpenAI = () => {
     // Get API key from environment variable
     // Note: In Vite, environment variables must be prefixed with VITE_
     // and accessed through import.meta.env
-    const apiKey = import.meta.env.VITE_AZURE_OPENAI_API_KEY;
+    const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
     
     console.log('Environment variables available:', Object.keys(import.meta.env));
     console.log('API Key found:', apiKey ? 'Yes (length: ' + apiKey.length + ')' : 'No');
-    console.log('Using Azure OpenAI endpoint:', AZURE_OPENAI_ENDPOINT);
-    console.log('Using model:', OPENAI_MODEL);
-    console.log('API Key value:', apiKey); // Log the actual API key value for debugging
     
-    if (!apiKey || apiKey === 'your_azure_openai_api_key_here') {
-      console.warn('Azure OpenAI API key not found or using placeholder value. Using mock mode.');
+    if (!apiKey || apiKey === 'your_openai_api_key_here') {
+      console.warn('OpenAI API key not found or using placeholder value. Using mock mode.');
       // Create a mock OpenAI client for demo purposes
       openai = {
         chat: {
           completions: {
             create: async () => ({
-              choices: [{ message: { content: 'This is a mock AI response. Please add a valid Azure OpenAI API key to enable real AI feedback.' } }]
+              choices: [{ message: { content: 'This is a mock AI response. Please add a valid OpenAI API key to enable real AI feedback.' } }]
             })
           }
         }
       };
       return true; // Return true to allow the app to function in mock mode
-    }
-  
-    // Initialize Azure OpenAI client
-    openai = new OpenAI({
-      apiKey: apiKey,
-      baseURL: `${AZURE_OPENAI_ENDPOINT}/openai/deployments/${OPENAI_MODEL}`,
-      defaultQuery: { 'api-version': OPENAI_API_VERSION },
-      defaultHeaders: { 'api-key': apiKey },
-      dangerouslyAllowBrowser: true // Only for demo purposes
-    });
-    
-    console.log('OpenAI client initialized with:', {
-      baseURL: `${AZURE_OPENAI_ENDPOINT}/openai/deployments/${OPENAI_MODEL}`,
-      apiVersion: OPENAI_API_VERSION
-    });
-    
-    console.log('Azure OpenAI client initialized successfully');
-    return true;
-  } catch (error) {
-    console.error('Error initializing Azure OpenAI client:', error);
-    // Create a mock OpenAI client as fallback
-    openai = {
-      chat: {
-        completions: {
-          create: async () => ({
-            choices: [{ message: { content: 'Error connecting to Azure OpenAI. Using mock response.' } }]
-          })
-        }
-      }
-    };
-    return false;
   }
+  
+  openai = new OpenAI({
+    apiKey: apiKey,
+    dangerouslyAllowBrowser: true // Only for demo purposes
+  });
+  console.log('OpenAI client initialized successfully');
+  return true;
+} catch (error) {
+  console.error('Error initializing OpenAI client:', error);
+  // Create a mock OpenAI client as fallback
+  openai = {
+    chat: {
+      completions: {
+        create: async () => ({
+          choices: [{ message: { content: 'Error connecting to OpenAI. Using mock response.' } }]
+        })
+      }
+    }
+  };
+  return false;
+}
 };
 
 /**
@@ -172,30 +154,19 @@ export const getPoseFeedback = async (exerciseData, phase, pose, isCorrect, curr
       Be encouraging but precise about form corrections.`;
     }
     
-    console.log('Making API call to Azure OpenAI with:', {
-      model: OPENAI_MODEL,
-      endpoint: AZURE_OPENAI_ENDPOINT,
-      apiVersion: OPENAI_API_VERSION
+    const response = await openai.chat.completions.create({
+      model: 'gpt-3.5-turbo',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: JSON.stringify(compactData) }
+      ],
+      max_tokens: 50,
+      temperature: 0.7,
     });
     
-    try {
-      const response = await openai.chat.completions.create({
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: JSON.stringify(compactData) }
-        ],
-        max_tokens: 50,
-        temperature: 0.7,
-      });
-      
-      console.log('API call successful, response:', response);
-      const feedback = response.choices[0].message.content.trim();
-      console.log('Received AI feedback:', feedback);
-      return feedback;
-    } catch (apiError) {
-      console.error('API call failed with error:', apiError);
-      return 'AI feedback temporarily unavailable. Keep going!';
-    }
+    const feedback = response.choices[0].message.content.trim();
+    console.log('Received AI feedback:', feedback);
+    return feedback;
   } catch (error) {
     console.error('Error getting AI feedback:', error);
     return 'AI feedback temporarily unavailable. Keep going!';
@@ -214,6 +185,7 @@ export const testOpenAIConnection = async (message) => {
 
   try {
     const response = await openai.chat.completions.create({
+      model: "gpt-4",
       messages: [
         {
           role: "system",
