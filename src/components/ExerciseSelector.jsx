@@ -1,5 +1,5 @@
 import React from 'react';
-import VideoTutorial from './VideoTutorial';
+import VideoTutorial from './VideoTutorial.jsx';
 
 const ExerciseSelector = ({ exercises, onSelectExercise, selectedExercise }) => {
   return (
@@ -10,15 +10,15 @@ const ExerciseSelector = ({ exercises, onSelectExercise, selectedExercise }) => 
           <p>Loading exercises...</p>
         ) : (
           exercises.map((exercise) => (
-            <div key={exercise.exercise_id} className="exercise-card">
+            <div key={exercise.id} className="exercise-card">
               <button
-                className={`exercise-item ${selectedExercise?.exercise_id === exercise.exercise_id ? 'selected' : ''}`}
+                className={`exercise-item ${selectedExercise?.id === exercise.id ? 'selected' : ''}`}
                 onClick={() => onSelectExercise(exercise)}
               >
                 {exercise.name}
               </button>
               <div className="tutorial-video">
-                <VideoTutorial exerciseId={exercise.exercise_id} />
+                <VideoTutorial exerciseId={exercise.id} />
               </div>
               <div className="exercise-description">
                 <p>Click to start exercise detection with AI-powered form correction</p>

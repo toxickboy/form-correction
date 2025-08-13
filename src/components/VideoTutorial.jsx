@@ -1,13 +1,18 @@
 import React, { useEffect, useMemo } from 'react';
+import pushupVideo from '../videos/pushup.mp4';
+import squatVideo from '../videos/squat.mp4';
+import lungeVideo from '../videos/lunge.mp4';
+import plankVideo from '../videos/plank.mp4';
+import pullupVideo from '../videos/pullup.mp4';
 
 const VideoTutorial = ({ exerciseId }) => {
   // Map exercise IDs to video file paths using useMemo
   const videoMap = useMemo(() => ({
-    'pushup1': '/src/videos/pushup.mp4',
-    'squat1': '/src/videos/squat.mp4',
-    'lunge1': '/src/videos/lunge.mp4',
-    'plank1': '/src/videos/plank.mp4',
-    'pullup1': '/src/videos/pullup.mp4'
+    'pushup1': pushupVideo,
+    'squat1': squatVideo,
+    'lunge1': lungeVideo,
+    'plank1': plankVideo,
+    'pullup1': pullupVideo
   }), []); // Empty dependency array since the map never changes
 
   useEffect(() => {
