@@ -45,15 +45,15 @@ export const smoothAngle = (newAngle, buffer, bufferSize = 5) => {
  */
 export const EXERCISE_THRESHOLDS = {
   pushup1: {
-    elbow: { up: 140, down: 95, tolerance: 15 }
+    elbow: { up: 140, down: 95, tolerance: 20 }  // Increased tolerance
   },
   squat1: {
-    knee: { up: 160, down: 90, tolerance: 15 },
-    hip: { up: 170, down: 90, tolerance: 20 }
+    knee: { up: 160, down: 90, tolerance: 20 },  // Increased tolerance
+    hip: { up: 170, down: 90, tolerance: 25 }    // Increased tolerance
   },
   lunge1: {
-    knee: { up: 160, down: 100, tolerance: 15 },
-    stance: { minDistance: 0.3, tolerance: 0.1 }
+    knee: { up: 160, down: 100, tolerance: 20 }, // Increased tolerance
+    stance: { minDistance: 0.3, tolerance: 0.15 } // Increased stance tolerance
   }
 };
 
@@ -65,13 +65,14 @@ export const repCountingStateMachine = (currentState, angle, confidence, exercis
     return { newState: currentState, newPhase: 'neutral', repComplete: false };
   }
 
-  let thresholds = { up: 160, down: 90 };
+  // More lenient thresholds for rep counting
+  let thresholds = { up: 155, down: 95 }; // Default more lenient
   if (exerciseType === 'pushup1') {
-    thresholds = { up: 140, down: 95 };
+    thresholds = { up: 135, down: 100 }; // More lenient pushup thresholds
   } else if (exerciseType === 'squat1') {
-    thresholds = { up: 160, down: 90 };
+    thresholds = { up: 155, down: 95 }; // More lenient squat thresholds
   } else if (exerciseType === 'lunge1') {
-    thresholds = { up: 160, down: 100 };
+    thresholds = { up: 155, down: 105 }; // More lenient lunge thresholds
   }
 
   let newState = currentState;

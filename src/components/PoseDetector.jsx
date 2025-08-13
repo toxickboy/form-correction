@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
 import Webcam from 'react-webcam';
 import * as poseDetection from '@tensorflow-models/pose-detection';
 import * as tf from '@tensorflow/tfjs-core';
@@ -11,11 +11,21 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
   console.log('PoseDetector rendered with exercise:', exercise, 'isDetecting:', isDetecting, 'isOpenAIEnabled:', isOpenAIEnabled);
   
   // Ensure exercise object has the correct structure
-  const exerciseData = {
+  const exerciseData = useMemo(() => ({
     exercise_id: exercise?.id || exercise?.exercise_id || 'unknown',
     name: exercise?.name || 'Unknown Exercise',
     phases: exercise?.phases || []
-  };
+  }), [exercise]);
+
+  // Create repStateRef at component level
+  const repStateRef = useRef({
+    currentState: 'START',
+    angleBuffer: [],
+    lastAngle: 0,
+    repInProgress: false,
+    exerciseType: exerciseData.exercise_id,
+    lockedArm: null
+  });
   
   console.log('Exercise data initialized:', exerciseData);
   const webcamRef = useRef(null);
@@ -24,6 +34,7 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
   const [detector, setDetector] = useState(null);
   const [repCount, setRepCount] = useState(0);
   const [currentPhase, setCurrentPhase] = useState('');
+  const [facingMode, setFacingMode] = useState('user'); // 'user' for front camera, 'environment' for back camera
   const [feedback, setFeedback] = useState({ isCorrect: true, message: 'Get ready...' });
   const [phaseHistory, setPhaseHistory] = useState([]);
   const [isRepComplete, setIsRepComplete] = useState(false);
@@ -32,12 +43,17 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
 
   // Initialize the pose detector
   useEffect(() => {
+    let isComponentMounted = true;
+    
     const initializeDetector = async () => {
       try {
         console.log('Setting up TensorFlow.js backend...');
         await tf.ready();
         await tf.setBackend('webgl');
         console.log('TensorFlow backend initialized:', tf.getBackend());
+        
+        // Start a new TensorFlow scope to better manage memory
+        tf.engine().startScope();
         
         console.log('Initializing pose detector...');
         const model = poseDetection.SupportedModels.MoveNet;
@@ -49,19 +65,36 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
         console.log('Creating detector with config:', detectorConfig);
         const detector = await poseDetection.createDetector(model, detectorConfig);
         console.log('Pose detector created successfully');
-          
+        
+        // Only update state if component is still mounted
+        if (isComponentMounted) {
           setDetector(detector);
           console.log('Pose detector state updated');
-        } catch (error) {
-          console.error('Error initializing pose detector:', error);
+        } else {
+          // If component unmounted during initialization, clean up the detector
+          console.log('Component unmounted during initialization, cleaning up detector');
+          // Clean up TensorFlow resources
+          tf.engine().endScope();
         }
+      } catch (error) {
+        console.error('Error initializing pose detector:', error);
+      }
     };
+    
     console.log('Starting detector initialization...');
     initializeDetector();
 
     return () => {
-      console.log('Cleaning up pose detector');
-      // Remove setIsDetecting since it's not defined
+      console.log('Cleaning up pose detector on unmount');
+      isComponentMounted = false;
+      
+      // Clean up TensorFlow resources
+      try {
+        tf.engine().endScope();
+        console.log('TensorFlow resources cleaned up');
+      } catch (error) {
+        console.error('Error cleaning up TensorFlow resources:', error);
+      }
     };
   }, []);
 
@@ -69,9 +102,16 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
   useEffect(() => {
     console.log('Detection effect triggered, detector:', detector ? 'initialized' : 'not initialized', 'isDetecting:', isDetecting);
     
-    if (!detector || !isDetecting) {
-      console.log('Skipping detection loop - detector or isDetecting not ready');
+    if (!detector || !isDetecting || !webcamRef.current?.video) {
+      console.log('Skipping detection loop - detector, isDetecting, or webcam not ready');
       return; // Only run when detector is initialized and isDetecting is true
+    }
+    
+    // Reset the video stream when camera changes
+    const video = webcamRef.current.video;
+    if (video.srcObject) {
+      const tracks = video.srcObject.getTracks();
+      tracks.forEach(track => track.stop());
     }
     
     // Reset rep count when starting detection
@@ -83,22 +123,41 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
     setAIFeedback('');
     resetFormIssuesHistory(); // Reset form issues history for OpenAI
     
-    let animationFrameId;
-    let lastPhase = 'neutral';
+    let animationFrameId = null;
     let confidenceThreshold = 0.3; // Higher threshold for better detection reliability
+    let isActive = true; // Flag to track if component is still mounted
+    let frameCount = 0; // Counter for frames processed
     
-    // State machine for rep counting
-    const repStateRef = useRef({
+    // Function to periodically clean up TensorFlow memory
+    const cleanupTensorFlowMemory = () => {
+      try {
+        // Clean up unused tensors every 100 frames
+        tf.tidy(() => {});
+        console.log('TensorFlow memory cleaned up, tensors:', tf.memory().numTensors);
+      } catch (error) {
+        console.error('Error cleaning up TensorFlow memory:', error);
+      }
+    };
+    
+    // Reset rep state for new detection session
+    repStateRef.current = {
       currentState: 'START',
       angleBuffer: [],
       lastAngle: 0,
       repInProgress: false,
-      exerciseType: exerciseData.exercise_id
-    });
+      exerciseType: exerciseData.exercise_id,
+      lockedArm: null
+    };
     let repState = repStateRef.current;
 
     const detect = async () => {
       try {
+        // Check if component is still active before continuing
+        if (!isActive) {
+          console.log('Component is no longer active, stopping detection loop');
+          return;
+        }
+        
         if (!detector) {
           console.log('Detector not initialized yet');
           animationFrameId = requestAnimationFrame(detect);
@@ -150,11 +209,24 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
           validatePose(pose, exerciseData);
         }
         
-        // Continue the detection loop
-        animationFrameId = requestAnimationFrame(detect);
+        // Increment frame counter
+        frameCount++;
+        
+        // Periodically clean up TensorFlow memory (every 100 frames)
+        if (frameCount % 100 === 0) {
+          cleanupTensorFlowMemory();
+        }
+        
+        // Continue the detection loop only if component is still active
+        if (isActive) {
+          animationFrameId = requestAnimationFrame(detect);
+        }
       } catch (error) {
         console.error('Error in pose detection loop:', error);
-        animationFrameId = requestAnimationFrame(detect);
+        // Continue the detection loop only if component is still active
+        if (isActive) {
+          animationFrameId = requestAnimationFrame(detect);
+        }
       }
     };
 
@@ -414,7 +486,6 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
         console.log(`Current angle: ${Math.round(repState.angleBuffer[repState.angleBuffer.length-1])}°, Phase: ${phase}, Reps: ${repCount}, State: ${repState.currentState}`);
       }
 
-      lastPhase = phase;
       setCurrentPhase(phase);
       setFeedback({ isCorrect, message: feedbackMessage });
       
@@ -538,12 +609,43 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
 
     return () => {
       console.log('Cleaning up detection loop');
-      cancelAnimationFrame(animationFrameId);
+      isActive = false; // Mark component as inactive
+      
+      // Cancel any pending animation frame
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
+      }
+      
+      // Release TensorFlow memory
+      if (detector) {
+        try {
+          console.log('Releasing TensorFlow resources');
+          // Force garbage collection for TensorFlow resources
+          tf.engine().endScope();
+          tf.engine().disposeVariables();
+        } catch (error) {
+          console.error('Error releasing TensorFlow resources:', error);
+        }
+      }
     };
-  }, [detector, exercise, isDetecting, isOpenAIEnabled, voiceFeedbackEnabled]);
+  }, [
+    detector,
+    exercise,
+    isDetecting,
+    isOpenAIEnabled,
+    voiceFeedbackEnabled,
+    facingMode,
+    currentPhase,
+    exerciseData,
+    feedback.isCorrect,
+    getAIFeedback,
+    lastAIRequestTime,
+    repCount
+  ]);
 
   // Function to get AI feedback from OpenAI
-  const getAIFeedback = async (pose, phase, isCorrect, currentFeedbackMsg) => {
+  const getAIFeedback = useCallback(async (pose, phase, isCorrect, currentFeedbackMsg) => {
     try {
       if (!pose || !isOpenAIEnabled) {
         console.log('AI feedback skipped: No pose data available or OpenAI disabled');
@@ -588,13 +690,31 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
       console.error('Error getting AI feedback:', error);
       setAIFeedback('Error getting AI feedback: ' + error.message);
     }
-  };
+  }, [exerciseData, isOpenAIEnabled, isRepComplete, lastAIRequestTime]);
 
   return (
     <div className="pose-detector">
       <div className="controls" style={{ backgroundColor: '#f0f8ff', padding: '15px', borderRadius: '8px', marginBottom: '20px', boxShadow: '0 4px 8px rgba(0,0,0,0.1)' }}>
         <button onClick={onBack} style={{ marginRight: '15px', padding: '8px 15px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Back</button>
         <h2 style={{ fontWeight: 'bold', fontSize: '2em', color: '#007bff', display: 'inline-block', margin: '10px 0', textShadow: '1px 1px 2px rgba(0,0,0,0.1)' }}>{exerciseData.name || 'Not selected'}</h2>
+        <button 
+          onClick={() => setFacingMode(prev => prev === 'user' ? 'environment' : 'user')}
+          style={{ 
+            marginLeft: '15px', 
+            padding: '8px 15px', 
+            backgroundColor: '#28a745', 
+            color: 'white', 
+            border: 'none', 
+            borderRadius: '4px', 
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '5px'
+          }}
+        >
+          <span role="img" aria-label="camera">📷</span>
+          Switch Camera ({facingMode === 'user' ? 'Front' : 'Back'})
+        </button>
       </div>
       <div className="detection-area">
         <div className="webcam-container">
@@ -612,12 +732,12 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
               height: 480,
             }}
             audio={false}
-            mirrored={true}
+            mirrored={facingMode === 'user'}
             screenshotFormat="image/jpeg"
             videoConstraints={{
               width: 640,
               height: 480,
-              facingMode: 'user',
+              facingMode: facingMode,
               frameRate: { ideal: 30 }
             }}
             onUserMedia={(stream) => {

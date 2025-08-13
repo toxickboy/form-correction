@@ -128,6 +128,37 @@ main {
   max-width: 600px;
 }
 
+/* Video Tutorial Styles */
+.video-tutorial {
+  margin: 20px 0;
+  padding: 15px;
+  background-color: #fff;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.video-tutorial h3 {
+  margin-top: 0;
+  margin-bottom: 10px;
+  color: #333;
+}
+
+.video-tutorial video {
+  border-radius: 4px;
+  max-height: 300px;
+  width: 100%;
+  object-fit: contain;
+  background-color: #000;
+}
+
+.video-tutorial-placeholder {
+  padding: 20px;
+  text-align: center;
+  background-color: #eee;
+  border-radius: 4px;
+  color: #666;
+}
+
 .openai-setup {
   margin: 20px 0;
   padding: 15px;

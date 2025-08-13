@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import './App.css'
 import ExerciseSelector from './components/ExerciseSelector'
 import PoseDetector from './components/PoseDetector'
+import VideoTutorial from './components/VideoTutorial'
 import { fetchExercises } from './services/api'
 import { initOpenAI } from './services/openaiService'
 
@@ -91,6 +92,9 @@ function App() {
               <div className="exercise-info">
                 <h2>{selectedExercise.name}</h2>
                 <p>Selected exercise: {selectedExercise.name}</p>
+                
+                {/* Video Tutorial Component */}
+                <VideoTutorial exerciseId={selectedExercise.exercise_id} />
                 
                 <div className="openai-setup">
                   <h3>AI Voice Feedback</h3>
