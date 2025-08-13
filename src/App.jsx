@@ -39,6 +39,8 @@ function App() {
 
   const startDetection = () => {
     console.log('Starting detection with exercise:', selectedExercise)
+    console.log('Exercise ID:', selectedExercise.exercise_id || selectedExercise.id)
+    console.log('Exercise data:', selectedExercise)
     setIsDetecting(true)
   }
 
@@ -127,14 +129,23 @@ function App() {
               </div>
             )}
           </div>
+        ) : selectedExercise ? (
+          <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+            <PoseDetector 
+              exercise={selectedExercise} 
+              onBack={() => setIsDetecting(false)}
+              isDetecting={isDetecting}
+              isOpenAIEnabled={isOpenAIEnabled}
+              voiceFeedbackEnabled={voiceFeedbackEnabled}
+            />
+          </div>
         ) : (
-          <PoseDetector 
-            exercise={selectedExercise} 
-            onBack={() => setIsDetecting(false)}
-            isDetecting={isDetecting}
-            isOpenAIEnabled={isOpenAIEnabled}
-            voiceFeedbackEnabled={voiceFeedbackEnabled}
-          />
+          <div className="error-message" style={{ padding: '20px', textAlign: 'center', color: 'red' }}>
+            <h2>Error: No exercise selected</h2>
+            <button onClick={() => setIsDetecting(false)} className="back-button">
+              Go Back
+            </button>
+          </div>
         )}
       </main>
     </div>

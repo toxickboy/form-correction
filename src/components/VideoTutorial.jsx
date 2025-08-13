@@ -32,12 +32,14 @@ const VideoTutorial = ({ exerciseId }) => {
     }
   }, [exerciseId, videoMap]);
 
+  // Try to get video source using either exercise ID format
   const videoSrc = videoMap[exerciseId] || '';
   console.log('Video source path:', videoSrc);
+  console.log('Trying to load video for exerciseId:', exerciseId);
 
   if (!videoSrc) {
-    console.log('No video source found for exerciseId:', exerciseId);
-    return <div className="video-tutorial-placeholder">No tutorial video available for {exerciseId}</div>;
+    console.warn('No video source found for exerciseId:', exerciseId);
+    return <div className="video-tutorial-placeholder">Tutorial video coming soon...</div>;
   }
 
   return (

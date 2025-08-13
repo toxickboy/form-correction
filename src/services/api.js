@@ -70,6 +70,7 @@ export const fetchExercises = async () => {
   // Return complete exercise data from mockExercises
   return mockExercises.map(exercise => ({
     id: exercise.exercise_id,
+    exercise_id: exercise.exercise_id,  // Keep both id and exercise_id
     name: exercise.name,
     description: `${exercise.name} exercise`,
     phases: exercise.phases

@@ -18,7 +18,7 @@ const ExerciseSelector = ({ exercises, onSelectExercise, selectedExercise }) => 
                 {exercise.name}
               </button>
               <div className="tutorial-video">
-                <VideoTutorial exerciseId={exercise.id} />
+                <VideoTutorial exerciseId={exercise.exercise_id || exercise.id} />
               </div>
               <div className="exercise-description">
                 <p>Click to start exercise detection with AI-powered form correction</p>

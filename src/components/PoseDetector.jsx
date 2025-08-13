@@ -8,11 +8,14 @@ import { getPoseFeedback, resetFormIssuesHistory } from '../services/openaiServi
 import VoiceFeedback from './VoiceFeedback';
 
 const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFeedbackEnabled }) => {
-  console.log('PoseDetector rendered with exercise:', exercise, 'isDetecting:', isDetecting, 'isOpenAIEnabled:', isOpenAIEnabled);
+  console.log('PoseDetector rendered with exercise:', exercise);
+  console.log('Exercise ID:', exercise?.exercise_id || exercise?.id);
+  console.log('Exercise name:', exercise?.name);
+  console.log('Detection status:', isDetecting ? 'active' : 'inactive');
   
   // Ensure exercise object has the correct structure
   const exerciseData = useMemo(() => ({
-    exercise_id: exercise?.id || exercise?.exercise_id || 'unknown',
+    exercise_id: exercise?.exercise_id || exercise?.id || 'unknown',
     name: exercise?.name || 'Unknown Exercise',
     phases: exercise?.phases || []
   }), [exercise]);
@@ -691,6 +694,16 @@ const PoseDetector = ({ exercise, onBack, isDetecting, isOpenAIEnabled, voiceFee
       setAIFeedback('Error getting AI feedback: ' + error.message);
     }
   }, [exerciseData, isOpenAIEnabled, isRepComplete, lastAIRequestTime]);
+
+  // Early return if no exercise is provided
+  if (!exercise) {
+    return (
+      <div className="error-message" style={{ padding: '20px', textAlign: 'center', color: 'red' }}>
+        <h2>Error: No exercise selected</h2>
+        <button onClick={onBack} className="back-button">Go Back</button>
+      </div>
+    );
+  }
 
   return (
     <div className="pose-detector">
